@@ -1,0 +1,2 @@
+# JFIC
+Jellyfin Image Controls
