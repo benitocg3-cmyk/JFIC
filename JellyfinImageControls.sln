@@ -1,0 +1,24 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Jellyfin.Plugin.ImageControls", "src\Jellyfin.Plugin.ImageControls\Jellyfin.Plugin.ImageControls.csproj", "{A69D84A7-2A19-45B8-A247-72B4A424E463}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Jellyfin.Plugin.ImageControls.Tests", "tests\Jellyfin.Plugin.ImageControls.Tests\Jellyfin.Plugin.ImageControls.Tests.csproj", "{92968746-34CF-46B7-8FB3-78417E52F03F}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A69D84A7-2A19-45B8-A247-72B4A424E463}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A69D84A7-2A19-45B8-A247-72B4A424E463}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A69D84A7-2A19-45B8-A247-72B4A424E463}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A69D84A7-2A19-45B8-A247-72B4A424E463}.Release|Any CPU.Build.0 = Release|Any CPU
+		{92968746-34CF-46B7-8FB3-78417E52F03F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{92968746-34CF-46B7-8FB3-78417E52F03F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{92968746-34CF-46B7-8FB3-78417E52F03F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{92968746-34CF-46B7-8FB3-78417E52F03F}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
