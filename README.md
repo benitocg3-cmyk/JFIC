@@ -1,4 +1,5 @@
 # Jellyfin Image Controls — 1.0.0-beta2
+<img width="1044" height="1180" alt="JFIC" src="https://github.com/user-attachments/assets/b2cfa7b1-89d5-49b2-bccc-cd9028c335bb" />
 
 JFIC cible Jellyfin Server 10.11.11 et NVIDIA NVENC/NVDEC.
 
