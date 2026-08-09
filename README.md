@@ -1,88 +1,216 @@
 # Jellyfin Image Controls — 1.0.0-beta2
+
 <img width="1044" height="1180" alt="JFIC" src="https://github.com/user-attachments/assets/b2cfa7b1-89d5-49b2-bccc-cd9028c335bb" />
 
-JFIC targets Jellyfin Server 10.11.11 and NVIDIA NVENC/NVDEC.
+JFIC (**Jellyfin Image Controls**) adds runtime image controls to Jellyfin without modifying media files and without forcing video transcoding just to apply an adjustment.
 
-There are two distinct playback scenarios:
+Current target:
 
-- **Direct Play / Direct Stream:** image adjustments are applied in Firefox using CSS/SVG after decoding. No transcoding is requested.
-- **Video transcoding already selected by Jellyfin:** Harmony adds the filters to the existing FFmpeg pipeline. JFIC never turns a `copy` video stream into a transcoded stream.
+- **Jellyfin Server:** 10.11.11
+- **.NET:** 9.0
+- **Harmony:** 2.4.2
+- **Primary hardware path:** NVIDIA NVENC/NVDEC
+- **Supported server installers in this repository:** Ubuntu and Windows Server
 
-## Simple Installation via Remote Desktop
+> [!IMPORTANT]
+> JFIC patches Jellyfin internals at runtime with Harmony. Version `1.0.0-beta2` targets Jellyfin `10.11.11` specifically. Do not assume compatibility with another Jellyfin release without testing it first.
 
-Copy the ZIP file to `~/jfic-install` on Ubuntu, then open a terminal:
+## How it works
+
+JFIC deliberately separates two playback cases:
+
+- **Direct Play / Direct Stream:** image adjustments are applied in the Web client using CSS/SVG after decoding. JFIC does not request transcoding.
+- **Video transcoding already selected by Jellyfin:** Harmony appends JFIC filters to the existing FFmpeg pipeline. JFIC refuses to turn a video-copy path into a video transcode.
+
+The invariant is simple:
+
+```text
+never-force-video-transcode
+```
+
+Available controls:
+
+- brightness
+- contrast
+- saturation
+- hue
+- gamma
+- color temperature
+
+Color temperature currently remains client-side.
+
+---
+
+# Windows Server — automated installation
+
+Windows Server no longer requires manually copying DLLs or editing Jellyfin Web files.
+
+## Requirements
+
+- Jellyfin Server `10.11.11`
+- Jellyfin installed as the Windows service for the fully automatic Web overlay setup
+- PowerShell 5.1 or newer
+- Administrator rights
+- for the NVIDIA server-side path: a working NVIDIA driver and Jellyfin FFmpeg with NVENC/CUDA support
+
+The official Jellyfin Windows installer normally exposes its `InstallFolder` and `DataFolder` through the Windows Registry. JFIC discovers those values automatically.
+
+## Install
+
+Download and extract:
+
+```text
+JellyfinImageControls-Windows-1.0.0-beta2.zip
+```
+
+For the easiest installation, simply run:
+
+```text
+Install-JFIC.cmd
+```
+
+The launcher requests Administrator privileges through UAC automatically. After installation, run:
+
+```text
+Doctor-JFIC.cmd
+```
+
+PowerShell users can run the same workflow directly:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\install.ps1
+.\doctor.ps1
+```
+
+That is the normal Windows Server installation.
+
+The installer automatically:
+
+1. detects the Jellyfin installation and data directories;
+2. verifies the Jellyfin version;
+3. runs the NVIDIA / FFmpeg preflight;
+4. stops Jellyfin only if it was already running;
+5. installs `Jellyfin.Plugin.ImageControls.dll` and the exact packaged `0Harmony.dll`;
+6. creates a JFIC-owned copy of Jellyfin Web;
+7. injects `image-controls.js` and `image-controls.css` into that copy;
+8. configures the Jellyfin service to use the JFIC Web copy through `JELLYFIN_WEB_DIR`;
+9. saves installation state for clean uninstallation and upgrades;
+10. restarts Jellyfin only if it had been running before the installation.
+
+JFIC does **not** modify the native `jellyfin-web` directory.
+
+### Installer options
+
+```powershell
+.\install.ps1 -NoWeb
+.\install.ps1 -SkipNvidiaPreflight
+.\install.ps1 -ForceVersion
+.\install.ps1 -NoRestart
+.\install.ps1 -ForceWebOverride
+```
+
+`-NoWeb` installs only the server plugin. Harmony can still operate during an existing video transcode, but JFIC cannot automatically add its palette button to Jellyfin Web.
+
+`-SkipNvidiaPreflight` is useful for client-side/software-only testing or systems where NVIDIA acceleration is intentionally unavailable.
+
+`-ForceVersion` bypasses the exact Jellyfin `10.11.11` check. Use it only after validating the runtime hooks against that Jellyfin build.
+
+`-ForceWebOverride` allows JFIC to temporarily replace an existing service-level `JELLYFIN_WEB_DIR`; the previous value is saved and restored by the uninstaller. JFIC will still refuse to modify a service that has an explicit `--webdir` command-line argument because that argument has higher precedence.
+
+## Diagnostics
+
+Run:
+
+```powershell
+.\doctor.ps1
+```
+
+The doctor checks the Jellyfin version, Windows service, plugin DLL, Harmony DLL, installation state, Web overlay, safe mode, service Web configuration, NVIDIA/FFmpeg capabilities, and recent JFIC/Harmony log entries.
+
+To skip the GPU checks:
+
+```powershell
+.\doctor.ps1 -SkipNvidiaPreflight
+```
+
+## Temporary FFmpeg safe mode
+
+Safe mode prevents the Harmony FFmpeg hooks from being installed when Jellyfin starts.
+
+```powershell
+.\ffmpeg-safe-mode.ps1 on
+.\ffmpeg-safe-mode.ps1 status
+.\ffmpeg-safe-mode.ps1 off
+```
+
+If Jellyfin is running as a service, the script restarts it automatically so the change takes effect.
+
+## Uninstall
+
+For the easiest removal, run:
+
+```text
+Uninstall-JFIC.cmd
+```
+
+Or from an elevated PowerShell:
+
+```powershell
+.\uninstall.ps1
+```
+
+The uninstaller removes JFIC, removes its Web overlay, restores the previous Jellyfin service Web configuration, and leaves the native Jellyfin installation, database, settings, and media untouched.
+
+Optional cleanup:
+
+```powershell
+.\uninstall.ps1 -PurgeConfig
+.\uninstall.ps1 -PurgeBackups
+```
+
+## Windows tray/direct-process installs
+
+The automatic Web overlay is intentionally limited to Windows **service mode**, where JFIC can change and restore the server environment safely.
+
+For a tray/direct Jellyfin process, stop Jellyfin and use plugin-only mode:
+
+```powershell
+.\install.ps1 -NoWeb -NoRestart
+```
+
+Then restart Jellyfin yourself.
+
+For the complete Windows procedure and troubleshooting notes, see [`docs/WINDOWS-SERVER.md`](docs/WINDOWS-SERVER.md).
+
+---
+
+# Ubuntu — automated installation
+
+Copy the Ubuntu ZIP to the server, extract it, and run:
 
 ```bash
-cd ~/jfic-install
-unzip -o JellyfinImageControls-Ubuntu-1.0.0-beta2.zip .
+unzip -o JellyfinImageControls-Ubuntu-1.0.0-beta2.zip
+cd JellyfinImageControls-Ubuntu-1.0.0-beta2
 sudo bash install.sh
 sudo bash doctor.sh
 ```
 
-The standard installation installs both the plugin and a JFIC-owned Web overlay.
+The standard installation installs both the server plugin and a JFIC-owned Web overlay. It does **not** modify `/usr/share/jellyfin/web`, Jellyfin binaries, media files, or `/etc/jellyfin`.
 
-It does **not** modify `/usr/share/jellyfin/web`, Jellyfin binaries, media files, or `/etc/jellyfin`.
-
-JFIC creates the small systemd drop-in:
-
-```text
-/etc/systemd/system/jellyfin.service.d/90-jfic-web.conf
-```
-
-This drop-in is used to serve JFIC's Web copy. `uninstall.sh` removes it during uninstallation.
-
-If you only want the server plugin:
+Plugin-only mode:
 
 ```bash
 sudo bash install.sh --no-web
 ```
 
-In this mode, the Harmony backend still works for existing transcodes, but no button can be added automatically to Jellyfin Web.
-
-## Usage
-
-In Firefox, Chrome, or the Android app, start playing a video and click the `palette` button.
-
-Settings are stored locally in the browser and are remembered between sessions.
-
-During Direct Stream playback, image processing is performed locally.
-
-When an existing video transcode is active, the panel indicates whether FFmpeg/NVENC has taken over the processing. Temperature adjustment always remains local.
-
-## Complete JFIC Uninstallation
-
-From the same directory:
+Uninstall:
 
 ```bash
 sudo bash uninstall.sh
 ```
 
-This removes the plugin, `0Harmony.dll`, the JFIC Web overlay, its systemd drop-in, and JFIC state files.
-
-It leaves the official Jellyfin installation, the native Jellyfin Web interface, Jellyfin settings, the database, and all media files untouched.
-
-To also remove the plugin's XML configuration:
-
-```bash
-sudo bash uninstall.sh --purge-config
-```
-
-## Diagnostics
-
-```bash
-sudo bash doctor.sh
-sudo bash verify-base.sh
-```
-
-The expected log output contains:
-
-```text
-JFIC Harmony runtime patch active
-```
-
-If Harmony fails, the plugin does not break Jellyfin. The diagnostic tools report the error, and playback continues without server-side image filters.
-
-## Temporary Safe Mode
+Safe mode:
 
 ```bash
 sudo bash ffmpeg-safe-mode.sh on
@@ -90,17 +218,123 @@ sudo bash ffmpeg-safe-mode.sh status
 sudo bash ffmpeg-safe-mode.sh off
 ```
 
-Safe mode only disables the JFIC FFmpeg hooks after Jellyfin is restarted. Harmony remains installed and available for normal operation.
+Diagnostics:
 
-## Windows Development
+```bash
+sudo bash doctor.sh
+sudo bash verify-base.sh
+```
+
+---
+
+# Usage
+
+After installing the plugin and Web overlay:
+
+1. open Jellyfin in a supported Web-based client;
+2. start a video;
+3. click the **palette** button;
+4. adjust the image controls.
+
+Settings are stored locally in the browser and remembered between sessions.
+
+During Direct Play / Direct Stream, processing remains local to the client. When Jellyfin is already video-transcoding, the panel indicates whether the FFmpeg/NVENC backend has taken over supported adjustments.
+
+If the Harmony runtime patch cannot be installed, JFIC is designed to let playback continue without server-side image filtering instead of deliberately breaking playback.
+
+---
+
+# Jellyfin Desktop / MPV
+
+The JFIC server cannot directly change a `libmpv` instance running on another machine.
+
+The Web client emits an adapter message that a Jellyfin Desktop integration can translate to MPV properties:
+
+```text
+brightness -> brightness
+contrast   -> contrast
+saturation -> saturation
+hue        -> hue
+gamma      -> gamma
+```
+
+Color temperature requires a separate shader or client-side implementation.
+
+See [`clients/jellyfin-desktop/README.md`](clients/jellyfin-desktop/README.md).
+
+---
+
+# Development
+
+Build and test:
 
 ```powershell
 .\eng\Build.ps1
+```
+
+Build a Windows package:
+
+```powershell
+.\eng\Package-Windows.ps1
+```
+
+Build an Ubuntu package:
+
+```powershell
 .\eng\Package-Ubuntu.ps1
 ```
 
-The ZIP package is generated at:
+On Windows, double-clicking or running:
+
+```text
+Build-Release.cmd
+```
+
+builds/tests once and then creates **both** release packages:
 
 ```text
 dist\JellyfinImageControls-Ubuntu-1.0.0-beta2.zip
+dist\JellyfinImageControls-Windows-1.0.0-beta2.zip
+```
+
+Each package also receives a `.sha256` file.
+
+The packaging scripts verify that the shipped `0Harmony.dll` assembly version exactly matches the Harmony reference in `Jellyfin.Plugin.ImageControls.dll`.
+
+---
+
+# Safety guarantees
+
+JFIC is designed around these rules:
+
+- never modify media files;
+- never replace Jellyfin server binaries;
+- never force a video transcode only to apply image controls;
+- leave Direct Play / Direct Stream negotiation alone;
+- add server-side filters only after Jellyfin has already selected video transcoding;
+- continue playback without server filtering if the runtime patch fails;
+- keep the JFIC Web overlay separate from native Jellyfin Web;
+- make installation reversible on both Ubuntu and Windows Server.
+
+---
+
+# Current limitations
+
+- Harmony hooks currently target Jellyfin `10.11.11`.
+- NVIDIA NVENC/NVDEC is the primary accelerated server path.
+- Color temperature remains client-side.
+- Jellyfin Desktop native MPV control requires a client adapter.
+- Automatic Windows Web-overlay management requires Jellyfin Windows service mode.
+- A pre-existing service `--webdir` command-line argument must be handled manually because it has higher precedence than `JELLYFIN_WEB_DIR`.
+
+---
+
+# Version
+
+```text
+JFIC             1.0.0-beta2
+Plugin ABI       1.0.0.0
+Target Jellyfin  10.11.11
+.NET             9.0
+Harmony          2.4.2
 ```

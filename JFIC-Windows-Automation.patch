@@ -1,0 +1,1789 @@
+--- a/Build-Release.cmd
++++ b/Build-Release.cmd
+@@ -1,6 +1,13 @@
+ @echo off
+ setlocal
+ cd /d "%~dp0"
++
+ powershell -NoProfile -ExecutionPolicy Bypass -File ".\eng\Package-Ubuntu.ps1"
+ if errorlevel 1 pause & exit /b 1
++
++powershell -NoProfile -ExecutionPolicy Bypass -File ".\eng\Package-Windows.ps1" -SkipBuild
++if errorlevel 1 pause & exit /b 1
++
++echo.
++echo JFIC release packages created for Ubuntu and Windows.
+ pause
+--- a/README.md
++++ b/README.md
+@@ -1,81 +1,216 @@
+ # Jellyfin Image Controls — 1.0.0-beta2
++
+ <img width="1044" height="1180" alt="JFIC" src="https://github.com/user-attachments/assets/b2cfa7b1-89d5-49b2-bccc-cd9028c335bb" />
+ 
+-JFIC targets Jellyfin Server 10.11.11 and NVIDIA NVENC/NVDEC.
+-
+-There are two distinct playback scenarios:
+-- **Direct Play / Direct Stream:** image adjustments are applied in Firefox using CSS/SVG after decoding. No transcoding is requested.
+-- **Video transcoding already selected by Jellyfin:** Harmony adds the filters to the existing FFmpeg pipeline. JFIC never turns a `copy` video stream into a transcoded stream.
+-## Simple Installation via Remote Desktop
+-
+-Copy the ZIP file to `~/jfic-install` on Ubuntu, then open a terminal:
+-
+-```bash
+-cd ~/jfic-install
+-unzip -o JellyfinImageControls-Ubuntu-1.0.0-beta2.zip .
++JFIC (**Jellyfin Image Controls**) adds runtime image controls to Jellyfin without modifying media files and without forcing video transcoding just to apply an adjustment.
++
++Current target:
++
++- **Jellyfin Server:** 10.11.11
++- **.NET:** 9.0
++- **Harmony:** 2.4.2
++- **Primary hardware path:** NVIDIA NVENC/NVDEC
++- **Supported server installers in this repository:** Ubuntu and Windows Server
++
++> [!IMPORTANT]
++> JFIC patches Jellyfin internals at runtime with Harmony. Version `1.0.0-beta2` targets Jellyfin `10.11.11` specifically. Do not assume compatibility with another Jellyfin release without testing it first.
++
++## How it works
++
++JFIC deliberately separates two playback cases:
++
++- **Direct Play / Direct Stream:** image adjustments are applied in the Web client using CSS/SVG after decoding. JFIC does not request transcoding.
++- **Video transcoding already selected by Jellyfin:** Harmony appends JFIC filters to the existing FFmpeg pipeline. JFIC refuses to turn a video-copy path into a video transcode.
++
++The invariant is simple:
++
++```text
++never-force-video-transcode
++```
++
++Available controls:
++
++- brightness
++- contrast
++- saturation
++- hue
++- gamma
++- color temperature
++
++Color temperature currently remains client-side.
++
++---
++
++# Windows Server — automated installation
++
++Windows Server no longer requires manually copying DLLs or editing Jellyfin Web files.
++
++## Requirements
++
++- Jellyfin Server `10.11.11`
++- Jellyfin installed as the Windows service for the fully automatic Web overlay setup
++- PowerShell 5.1 or newer
++- Administrator rights
++- for the NVIDIA server-side path: a working NVIDIA driver and Jellyfin FFmpeg with NVENC/CUDA support
++
++The official Jellyfin Windows installer normally exposes its `InstallFolder` and `DataFolder` through the Windows Registry. JFIC discovers those values automatically.
++
++## Install
++
++Download and extract:
++
++```text
++JellyfinImageControls-Windows-1.0.0-beta2.zip
++```
++
++For the easiest installation, simply run:
++
++```text
++Install-JFIC.cmd
++```
++
++The launcher requests Administrator privileges through UAC automatically. After installation, run:
++
++```text
++Doctor-JFIC.cmd
++```
++
++PowerShell users can run the same workflow directly:
++
++```powershell
++Set-ExecutionPolicy -Scope Process Bypass
++.\install.ps1
++.\doctor.ps1
++```
++
++That is the normal Windows Server installation.
++
++The installer automatically:
++
++1. detects the Jellyfin installation and data directories;
++2. verifies the Jellyfin version;
++3. runs the NVIDIA / FFmpeg preflight;
++4. stops Jellyfin only if it was already running;
++5. installs `Jellyfin.Plugin.ImageControls.dll` and the exact packaged `0Harmony.dll`;
++6. creates a JFIC-owned copy of Jellyfin Web;
++7. injects `image-controls.js` and `image-controls.css` into that copy;
++8. configures the Jellyfin service to use the JFIC Web copy through `JELLYFIN_WEB_DIR`;
++9. saves installation state for clean uninstallation and upgrades;
++10. restarts Jellyfin only if it had been running before the installation.
++
++JFIC does **not** modify the native `jellyfin-web` directory.
++
++### Installer options
++
++```powershell
++.\install.ps1 -NoWeb
++.\install.ps1 -SkipNvidiaPreflight
++.\install.ps1 -ForceVersion
++.\install.ps1 -NoRestart
++.\install.ps1 -ForceWebOverride
++```
++
++`-NoWeb` installs only the server plugin. Harmony can still operate during an existing video transcode, but JFIC cannot automatically add its palette button to Jellyfin Web.
++
++`-SkipNvidiaPreflight` is useful for client-side/software-only testing or systems where NVIDIA acceleration is intentionally unavailable.
++
++`-ForceVersion` bypasses the exact Jellyfin `10.11.11` check. Use it only after validating the runtime hooks against that Jellyfin build.
++
++`-ForceWebOverride` allows JFIC to temporarily replace an existing service-level `JELLYFIN_WEB_DIR`; the previous value is saved and restored by the uninstaller. JFIC will still refuse to modify a service that has an explicit `--webdir` command-line argument because that argument has higher precedence.
++
++## Diagnostics
++
++Run:
++
++```powershell
++.\doctor.ps1
++```
++
++The doctor checks the Jellyfin version, Windows service, plugin DLL, Harmony DLL, installation state, Web overlay, safe mode, service Web configuration, NVIDIA/FFmpeg capabilities, and recent JFIC/Harmony log entries.
++
++To skip the GPU checks:
++
++```powershell
++.\doctor.ps1 -SkipNvidiaPreflight
++```
++
++## Temporary FFmpeg safe mode
++
++Safe mode prevents the Harmony FFmpeg hooks from being installed when Jellyfin starts.
++
++```powershell
++.\ffmpeg-safe-mode.ps1 on
++.\ffmpeg-safe-mode.ps1 status
++.\ffmpeg-safe-mode.ps1 off
++```
++
++If Jellyfin is running as a service, the script restarts it automatically so the change takes effect.
++
++## Uninstall
++
++For the easiest removal, run:
++
++```text
++Uninstall-JFIC.cmd
++```
++
++Or from an elevated PowerShell:
++
++```powershell
++.\uninstall.ps1
++```
++
++The uninstaller removes JFIC, removes its Web overlay, restores the previous Jellyfin service Web configuration, and leaves the native Jellyfin installation, database, settings, and media untouched.
++
++Optional cleanup:
++
++```powershell
++.\uninstall.ps1 -PurgeConfig
++.\uninstall.ps1 -PurgeBackups
++```
++
++## Windows tray/direct-process installs
++
++The automatic Web overlay is intentionally limited to Windows **service mode**, where JFIC can change and restore the server environment safely.
++
++For a tray/direct Jellyfin process, stop Jellyfin and use plugin-only mode:
++
++```powershell
++.\install.ps1 -NoWeb -NoRestart
++```
++
++Then restart Jellyfin yourself.
++
++For the complete Windows procedure and troubleshooting notes, see [`docs/WINDOWS-SERVER.md`](docs/WINDOWS-SERVER.md).
++
++---
++
++# Ubuntu — automated installation
++
++Copy the Ubuntu ZIP to the server, extract it, and run:
++
++```bash
++unzip -o JellyfinImageControls-Ubuntu-1.0.0-beta2.zip
++cd JellyfinImageControls-Ubuntu-1.0.0-beta2
+ sudo bash install.sh
+ sudo bash doctor.sh
+ ```
+ 
+-The standard installation installs both the plugin and a JFIC-owned Web overlay.
+-
+-It does **not** modify `/usr/share/jellyfin/web`, Jellyfin binaries, media files, or `/etc/jellyfin`.
+-
+-JFIC creates the small systemd drop-in:
+-```text
+-/etc/systemd/system/jellyfin.service.d/90-jfic-web.conf
+-```
+-
+-This drop-in is used to serve JFIC's Web copy. `uninstall.sh` removes it during uninstallation.
+-
+-If you only want the server plugin:
++The standard installation installs both the server plugin and a JFIC-owned Web overlay. It does **not** modify `/usr/share/jellyfin/web`, Jellyfin binaries, media files, or `/etc/jellyfin`.
++
++Plugin-only mode:
+ 
+ ```bash
+ sudo bash install.sh --no-web
+ ```
+ 
+-In this mode, the Harmony backend still works for existing transcodes, but no button can be added automatically to Jellyfin Web.
+-## Usage
+-
+-In Firefox, Chrome, or the Android app, start playing a video and click the `palette` button.
+-
+-Settings are stored locally in the browser and are remembered between sessions.
+-
+-During Direct Stream playback, image processing is performed locally.
+-
+-When an existing video transcode is active, the panel indicates whether FFmpeg/NVENC has taken over the processing. Temperature adjustment always remains local.
+-## Complete JFIC Uninstallation
+-
+-From the same directory:
++Uninstall:
+ 
+ ```bash
+ sudo bash uninstall.sh
+ ```
+ 
+-This removes the plugin, `0Harmony.dll`, the JFIC Web overlay, its systemd drop-in, and JFIC state files.
+-
+-It leaves the official Jellyfin installation, the native Jellyfin Web interface, Jellyfin settings, the database, and all media files untouched.
+-
+-To also remove the plugin's XML configuration:
+-
+-```bash
+-sudo bash uninstall.sh --purge-config
+-```
+-## Diagnostics
+-
+-```bash
+-sudo bash doctor.sh
+-sudo bash verify-base.sh
+-```
+-
+-The expected log output contains:
+-
+-```text
+-JFIC Harmony runtime patch active
+-```
+-
+-If Harmony fails, the plugin does not break Jellyfin. The diagnostic tools report the error, and playback continues without server-side image filters.
+-## Temporary Safe Mode
++Safe mode:
+ 
+ ```bash
+ sudo bash ffmpeg-safe-mode.sh on
+@@ -83,17 +218,123 @@
+ sudo bash ffmpeg-safe-mode.sh off
+ ```
+ 
+-Safe mode only disables the JFIC FFmpeg hooks after Jellyfin is restarted. Harmony remains installed and available for normal operation.
+-
+-## Windows Development
++Diagnostics:
++
++```bash
++sudo bash doctor.sh
++sudo bash verify-base.sh
++```
++
++---
++
++# Usage
++
++After installing the plugin and Web overlay:
++
++1. open Jellyfin in a supported Web-based client;
++2. start a video;
++3. click the **palette** button;
++4. adjust the image controls.
++
++Settings are stored locally in the browser and remembered between sessions.
++
++During Direct Play / Direct Stream, processing remains local to the client. When Jellyfin is already video-transcoding, the panel indicates whether the FFmpeg/NVENC backend has taken over supported adjustments.
++
++If the Harmony runtime patch cannot be installed, JFIC is designed to let playback continue without server-side image filtering instead of deliberately breaking playback.
++
++---
++
++# Jellyfin Desktop / MPV
++
++The JFIC server cannot directly change a `libmpv` instance running on another machine.
++
++The Web client emits an adapter message that a Jellyfin Desktop integration can translate to MPV properties:
++
++```text
++brightness -> brightness
++contrast   -> contrast
++saturation -> saturation
++hue        -> hue
++gamma      -> gamma
++```
++
++Color temperature requires a separate shader or client-side implementation.
++
++See [`clients/jellyfin-desktop/README.md`](clients/jellyfin-desktop/README.md).
++
++---
++
++# Development
++
++Build and test:
+ 
+ ```powershell
+ .\eng\Build.ps1
++```
++
++Build a Windows package:
++
++```powershell
++.\eng\Package-Windows.ps1
++```
++
++Build an Ubuntu package:
++
++```powershell
+ .\eng\Package-Ubuntu.ps1
+ ```
+ 
+-The ZIP package is generated at:
++On Windows, double-clicking or running:
++
++```text
++Build-Release.cmd
++```
++
++builds/tests once and then creates **both** release packages:
+ 
+ ```text
+ dist\JellyfinImageControls-Ubuntu-1.0.0-beta2.zip
+-```
++dist\JellyfinImageControls-Windows-1.0.0-beta2.zip
++```
++
++Each package also receives a `.sha256` file.
++
++The packaging scripts verify that the shipped `0Harmony.dll` assembly version exactly matches the Harmony reference in `Jellyfin.Plugin.ImageControls.dll`.
++
++---
++
++# Safety guarantees
++
++JFIC is designed around these rules:
++
++- never modify media files;
++- never replace Jellyfin server binaries;
++- never force a video transcode only to apply image controls;
++- leave Direct Play / Direct Stream negotiation alone;
++- add server-side filters only after Jellyfin has already selected video transcoding;
++- continue playback without server filtering if the runtime patch fails;
++- keep the JFIC Web overlay separate from native Jellyfin Web;
++- make installation reversible on both Ubuntu and Windows Server.
++
++---
++
++# Current limitations
++
++- Harmony hooks currently target Jellyfin `10.11.11`.
++- NVIDIA NVENC/NVDEC is the primary accelerated server path.
++- Color temperature remains client-side.
++- Jellyfin Desktop native MPV control requires a client adapter.
++- Automatic Windows Web-overlay management requires Jellyfin Windows service mode.
++- A pre-existing service `--webdir` command-line argument must be handled manually because it has higher precedence than `JELLYFIN_WEB_DIR`.
++
++---
++
++# Version
++
++```text
++JFIC             1.0.0-beta2
++Plugin ABI       1.0.0.0
++Target Jellyfin  10.11.11
++.NET             9.0
++Harmony          2.4.2
++```
+--- /dev/null
++++ b/deploy/windows/Doctor-JFIC.cmd
+@@ -0,0 +1,8 @@
++@echo off
++setlocal
++cd /d "%~dp0"
++powershell -NoProfile -ExecutionPolicy Bypass -File ".\doctor.ps1"
++set "rc=%errorlevel%"
++echo.
++pause
++exit /b %rc%
+--- /dev/null
++++ b/deploy/windows/Install-JFIC.cmd
+@@ -0,0 +1,21 @@
++@echo off
++setlocal
++cd /d "%~dp0"
++
++powershell -NoProfile -Command "$p=New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent()); if($p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){exit 0}else{exit 1}"
++if not errorlevel 1 goto elevated
++
++powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
++exit /b
++
++:elevated
++powershell -NoProfile -ExecutionPolicy Bypass -File ".\install.ps1"
++set "rc=%errorlevel%"
++echo.
++if "%rc%"=="0" (
++    echo JFIC installation completed. You can now run Doctor-JFIC.cmd.
++) else (
++    echo JFIC installation failed. Review the messages above.
++)
++pause
++exit /b %rc%
+--- /dev/null
++++ b/deploy/windows/Jfic.Windows.Common.ps1
+@@ -0,0 +1,311 @@
++$script:JficTargetJellyfin = '10.11.11'
++$script:JficPluginAbi = '1.0.0.0'
++$script:JficStateRoot = Join-Path $env:ProgramData 'jellyfin-image-controls'
++$script:JficStateFile = Join-Path $script:JficStateRoot 'install-state.json'
++$script:JficSafeModeMarker = Join-Path $script:JficStateRoot 'disable-ffmpeg-patch'
++
++function Write-JficStep {
++    param([Parameter(Mandatory = $true)][string]$Message)
++    Write-Host "[JFIC] $Message"
++}
++
++function Write-JficWarn {
++    param([Parameter(Mandatory = $true)][string]$Message)
++    Write-Warning "[JFIC] $Message"
++}
++
++function Test-JficAdministrator {
++    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
++    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
++    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
++}
++
++function Assert-JficAdministrator {
++    if (-not (Test-JficAdministrator)) {
++        throw 'Run PowerShell as Administrator and launch the command again.'
++    }
++}
++
++function Expand-JficRegistryPathValue {
++    param([AllowNull()][string]$Value)
++    if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
++    return [Environment]::ExpandEnvironmentVariables($Value)
++}
++
++function Get-JficRegistryInstall {
++    $keys = @(
++        'HKLM:\SOFTWARE\WOW6432Node\Jellyfin\Server',
++        'HKLM:\SOFTWARE\Jellyfin\Server'
++    )
++
++    foreach ($key in $keys) {
++        if (-not (Test-Path $key)) { continue }
++        $value = Get-ItemProperty -Path $key
++        $installFolder = Expand-JficRegistryPathValue $value.InstallFolder
++        $dataFolder = Expand-JficRegistryPathValue $value.DataFolder
++        if (-not [string]::IsNullOrWhiteSpace($installFolder)) {
++            return [pscustomobject]@{
++                RegistryPath = $key
++                InstallFolder = $installFolder
++                DataFolder = $dataFolder
++            }
++        }
++    }
++
++    return $null
++}
++
++function Get-JficService {
++    $service = Get-Service -Name 'JellyfinServer' -ErrorAction SilentlyContinue
++    if ($null -ne $service) { return $service }
++
++    $candidate = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
++        Where-Object {
++            $_.Name -match '(?i)jellyfin' -or
++            $_.DisplayName -match '(?i)jellyfin' -or
++            $_.PathName -match '(?i)jellyfin(?:\.exe|\.dll)'
++        } |
++        Select-Object -First 1
++
++    if ($null -ne $candidate) {
++        return Get-Service -Name $candidate.Name -ErrorAction SilentlyContinue
++    }
++
++    return $null
++}
++
++function Get-JficServiceRegistryPath {
++    param([Parameter(Mandatory = $true)][string]$ServiceName)
++    return "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName"
++}
++
++function Get-JficServiceImagePath {
++    param([Parameter(Mandatory = $true)][string]$ServiceName)
++    $path = Get-JficServiceRegistryPath $ServiceName
++    if (-not (Test-Path $path)) { return $null }
++    return (Get-ItemProperty -Path $path -Name ImagePath -ErrorAction SilentlyContinue).ImagePath
++}
++
++function Get-JficServiceEnvironment {
++    param([Parameter(Mandatory = $true)][string]$ServiceName)
++    $path = Get-JficServiceRegistryPath $ServiceName
++    try {
++        $value = Get-ItemProperty -Path $path -Name Environment -ErrorAction Stop
++        return @($value.Environment | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
++    }
++    catch {
++        return @()
++    }
++}
++
++function Set-JficServiceEnvironment {
++    param(
++        [Parameter(Mandatory = $true)][string]$ServiceName,
++        [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$Values
++    )
++
++    $path = Get-JficServiceRegistryPath $ServiceName
++    if ($Values.Count -eq 0) {
++        Remove-ItemProperty -Path $path -Name Environment -ErrorAction SilentlyContinue
++        return
++    }
++
++    New-ItemProperty `
++        -Path $path `
++        -Name Environment `
++        -PropertyType MultiString `
++        -Value ([string[]]$Values) `
++        -Force | Out-Null
++}
++
++function Get-JficJellyfinVersion {
++    param([Parameter(Mandatory = $true)][string]$Executable)
++
++    $text = $null
++    try {
++        $text = (& $Executable --version 2>&1 | Out-String)
++    }
++    catch {
++        $text = $null
++    }
++
++    if ([string]::IsNullOrWhiteSpace($text)) {
++        $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($Executable)
++        $text = "$($info.ProductVersion) $($info.FileVersion)"
++    }
++
++    $match = [regex]::Match($text, '(?<!\d)(\d+\.\d+\.\d+)(?:\.\d+)?')
++    if ($match.Success) { return $match.Groups[1].Value }
++    return $null
++}
++
++function Get-JficJellyfinInfo {
++    $registry = Get-JficRegistryInstall
++
++    if ($null -ne $registry) {
++        $installFolder = $registry.InstallFolder
++        $dataFolder = $registry.DataFolder
++    }
++    else {
++        $installFolder = Join-Path $env:ProgramFiles 'Jellyfin\Server'
++        $dataFolder = Join-Path $env:ProgramData 'Jellyfin\Server'
++    }
++
++    if ([string]::IsNullOrWhiteSpace($dataFolder)) {
++        $dataFolder = Join-Path $env:ProgramData 'Jellyfin\Server'
++    }
++
++    $executable = Join-Path $installFolder 'jellyfin.exe'
++    if (-not (Test-Path $executable)) {
++        throw "Jellyfin was not found. Expected jellyfin.exe at: $executable"
++    }
++
++    $service = Get-JficService
++    $version = Get-JficJellyfinVersion $executable
++
++    return [pscustomobject]@{
++        InstallFolder = $installFolder
++        DataFolder = $dataFolder
++        Executable = $executable
++        NativeWeb = Join-Path $installFolder 'jellyfin-web'
++        Version = $version
++        Service = $service
++        Registry = $registry
++    }
++}
++
++function Get-JficPluginDirectory {
++    param([Parameter(Mandatory = $true)][string]$DataFolder)
++    return Join-Path $DataFolder "plugins\Image Controls_$script:JficPluginAbi"
++}
++
++function Get-JficWebOverlayDirectory {
++    return Join-Path $script:JficStateRoot 'current\web'
++}
++
++function Get-JficFfmpeg {
++    param([Parameter(Mandatory = $true)][string]$InstallFolder)
++
++    $candidates = @(
++        (Join-Path $InstallFolder 'ffmpeg.exe'),
++        (Join-Path $InstallFolder 'ffmpeg\ffmpeg.exe'),
++        (Join-Path $InstallFolder 'jellyfin-ffmpeg\ffmpeg.exe')
++    )
++
++    foreach ($candidate in $candidates) {
++        if (Test-Path $candidate) { return $candidate }
++    }
++
++    $command = Get-Command 'ffmpeg.exe' -ErrorAction SilentlyContinue
++    if ($null -ne $command) { return $command.Source }
++    return $null
++}
++
++function Get-JficInstallState {
++    if (-not (Test-Path $script:JficStateFile)) { return $null }
++    try {
++        return Get-Content $script:JficStateFile -Raw | ConvertFrom-Json
++    }
++    catch {
++        Write-JficWarn "Could not parse $script:JficStateFile: $($_.Exception.Message)"
++        return $null
++    }
++}
++
++function Save-JficInstallState {
++    param([Parameter(Mandatory = $true)]$State)
++    New-Item -ItemType Directory -Path $script:JficStateRoot -Force | Out-Null
++    $json = $State | ConvertTo-Json -Depth 8
++    Set-Content -Path $script:JficStateFile -Value $json -Encoding UTF8
++}
++
++function Stop-JficServiceIfRunning {
++    param([AllowNull()]$Service)
++    if ($null -eq $Service) { return $false }
++    $Service.Refresh()
++    if ($Service.Status -eq [System.ServiceProcess.ServiceControllerStatus]::Running) {
++        Write-JficStep "Stopping Windows service '$($Service.Name)'..."
++        Stop-Service -Name $Service.Name -Force -ErrorAction Stop
++        (Get-Service -Name $Service.Name).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
++        return $true
++    }
++    return $false
++}
++
++function Start-JficServiceAndVerify {
++    param([Parameter(Mandatory = $true)][string]$ServiceName)
++    Write-JficStep "Starting Windows service '$ServiceName'..."
++    Start-Service -Name $ServiceName -ErrorAction Stop
++    $service = Get-Service -Name $ServiceName
++    $service.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
++    $service.Refresh()
++    if ($service.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Running) {
++        throw "Jellyfin service '$ServiceName' did not reach Running state."
++    }
++}
++
++function Set-JficWebServiceEnvironment {
++    param(
++        [Parameter(Mandatory = $true)][string]$ServiceName,
++        [Parameter(Mandatory = $true)][string]$WebDirectory,
++        [switch]$ForceWebOverride,
++        [AllowNull()]$PreviousState
++    )
++
++    $current = @(Get-JficServiceEnvironment $ServiceName)
++    $currentWeb = @($current | Where-Object { $_ -match '^(?i)JELLYFIN_WEB_DIR=' })
++    $managed = "JELLYFIN_WEB_DIR=$WebDirectory"
++
++    $previousWeb = @()
++    if ($null -ne $PreviousState -and
++        $PreviousState.ManagedWebDir -eq $WebDirectory -and
++        $currentWeb -contains $managed) {
++        $previousWeb = @($PreviousState.PreviousWebDirEntries)
++    }
++    elseif ($currentWeb.Count -gt 0 -and -not ($currentWeb -contains $managed)) {
++        if (-not $ForceWebOverride) {
++            throw "A custom JELLYFIN_WEB_DIR already exists for service '$ServiceName': $($currentWeb -join ', '). Use -ForceWebOverride to replace it temporarily, or -NoWeb to install the plugin only."
++        }
++        $previousWeb = @($currentWeb)
++    }
++
++    $updated = @($current | Where-Object { $_ -notmatch '^(?i)JELLYFIN_WEB_DIR=' })
++    $updated += $managed
++    Set-JficServiceEnvironment -ServiceName $ServiceName -Values $updated
++    return @($previousWeb)
++}
++
++function Restore-JficWebServiceEnvironment {
++    param(
++        [Parameter(Mandatory = $true)][string]$ServiceName,
++        [Parameter(Mandatory = $true)][string]$ManagedWebDirectory,
++        [AllowEmptyCollection()][string[]]$PreviousWebDirEntries = @()
++    )
++
++    $managed = "JELLYFIN_WEB_DIR=$ManagedWebDirectory"
++    $current = @(Get-JficServiceEnvironment $ServiceName)
++
++    if (-not ($current -contains $managed)) {
++        # The administrator changed this after JFIC was installed. Do not overwrite it.
++        return $false
++    }
++
++    $updated = @($current | Where-Object { $_ -ne $managed })
++    $hasCurrentCustomWebDir = @($updated | Where-Object { $_ -match '^(?i)JELLYFIN_WEB_DIR=' }).Count -gt 0
++    if (-not $hasCurrentCustomWebDir) {
++        foreach ($entry in @($PreviousWebDirEntries)) {
++            if (-not [string]::IsNullOrWhiteSpace($entry) -and -not ($updated -contains $entry)) {
++                $updated += $entry
++            }
++        }
++    }
++
++    Set-JficServiceEnvironment -ServiceName $ServiceName -Values $updated
++    return $true
++}
++
++function Test-JficExplicitWebDirArgument {
++    param([AllowNull()][string]$ImagePath)
++    if ([string]::IsNullOrWhiteSpace($ImagePath)) { return $false }
++    return $ImagePath -match '(?i)(?:^|\s)--webdir(?:=|\s+)'
++}
+--- /dev/null
++++ b/deploy/windows/Uninstall-JFIC.cmd
+@@ -0,0 +1,21 @@
++@echo off
++setlocal
++cd /d "%~dp0"
++
++powershell -NoProfile -Command "$p=New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent()); if($p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){exit 0}else{exit 1}"
++if not errorlevel 1 goto elevated
++
++powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
++exit /b
++
++:elevated
++powershell -NoProfile -ExecutionPolicy Bypass -File ".\uninstall.ps1"
++set "rc=%errorlevel%"
++echo.
++if "%rc%"=="0" (
++    echo JFIC uninstallation completed.
++) else (
++    echo JFIC uninstallation failed. Review the messages above.
++)
++pause
++exit /b %rc%
+--- /dev/null
++++ b/deploy/windows/doctor.ps1
+@@ -0,0 +1,140 @@
++[CmdletBinding()]
++param(
++    [switch]$SkipNvidiaPreflight
++)
++
++$ErrorActionPreference = 'Continue'
++. (Join-Path $PSScriptRoot 'Jfic.Windows.Common.ps1')
++
++$failures = New-Object System.Collections.Generic.List[string]
++$warnings = New-Object System.Collections.Generic.List[string]
++
++function Check-Ok([string]$Message) { Write-Host "[ OK ] $Message" }
++function Check-Warn([string]$Message) { $warnings.Add($Message); Write-Warning "[WARN] $Message" }
++function Check-Fail([string]$Message) { $failures.Add($Message); Write-Error "[FAIL] $Message" -ErrorAction Continue }
++
++Write-Host 'JFIC Windows doctor'
++Write-Host '==================='
++
++try {
++    $jellyfin = Get-JficJellyfinInfo
++    Check-Ok "Jellyfin executable: $($jellyfin.Executable)"
++    if ($jellyfin.Version -eq $script:JficTargetJellyfin) {
++        Check-Ok "Jellyfin version: $($jellyfin.Version)"
++    }
++    else {
++        Check-Warn "Jellyfin version is $($jellyfin.Version); JFIC currently targets $script:JficTargetJellyfin."
++    }
++}
++catch {
++    Check-Fail $_.Exception.Message
++    Write-Host "`nResult: FAILED ($($failures.Count) blocking issue(s))"
++    exit 1
++}
++
++if ($null -ne $jellyfin.Service) {
++    $jellyfin.Service.Refresh()
++    if ($jellyfin.Service.Status -eq [System.ServiceProcess.ServiceControllerStatus]::Running) {
++        Check-Ok "Windows service '$($jellyfin.Service.Name)' is running."
++    }
++    else {
++        Check-Warn "Windows service '$($jellyfin.Service.Name)' is $($jellyfin.Service.Status)."
++    }
++}
++else {
++    Check-Warn 'Jellyfin Windows service was not found. Automatic Web overlay management requires service mode.'
++}
++
++$pluginDirectory = Get-JficPluginDirectory $jellyfin.DataFolder
++$pluginDll = Join-Path $pluginDirectory 'Jellyfin.Plugin.ImageControls.dll'
++$harmonyDll = Join-Path $pluginDirectory '0Harmony.dll'
++if (Test-Path $pluginDll) { Check-Ok "Plugin DLL: $pluginDll" } else { Check-Fail "Plugin DLL missing: $pluginDll" }
++if (Test-Path $harmonyDll) { Check-Ok "Harmony DLL: $harmonyDll" } else { Check-Fail "Harmony DLL missing: $harmonyDll" }
++
++$state = Get-JficInstallState
++if ($null -ne $state) {
++    Check-Ok "Install state: $script:JficStateFile"
++    Write-Host "       JFIC version: $($state.JficVersion)"
++    Write-Host "       Installed UTC: $($state.InstalledUtc)"
++}
++else {
++    Check-Warn "Install state not found: $script:JficStateFile"
++}
++
++if (Test-Path $script:JficSafeModeMarker) {
++    Check-Warn "FFmpeg safe mode is ON: $script:JficSafeModeMarker"
++}
++else {
++    Check-Ok 'FFmpeg safe mode is OFF.'
++}
++
++if ($null -ne $state -and $state.WebInstalled -eq $true) {
++    $web = [string]$state.ManagedWebDir
++    $index = Join-Path $web 'index.html'
++    if (Test-Path $index) {
++        $html = Get-Content $index -Raw -ErrorAction SilentlyContinue
++        if ($html -match 'data-jfic="1"') { Check-Ok "Web overlay injected: $web" }
++        else { Check-Fail "JFIC marker missing from: $index" }
++    }
++    else {
++        Check-Fail "Web overlay index missing: $index"
++    }
++
++    if ($null -ne $jellyfin.Service) {
++        $expected = "JELLYFIN_WEB_DIR=$web"
++        $environment = @(Get-JficServiceEnvironment $jellyfin.Service.Name)
++        if ($environment -contains $expected) {
++            Check-Ok 'Jellyfin service points to the JFIC Web overlay.'
++        }
++        else {
++            Check-Fail "Jellyfin service does not contain expected environment entry: $expected"
++        }
++
++        $imagePath = Get-JficServiceImagePath $jellyfin.Service.Name
++        if (Test-JficExplicitWebDirArgument $imagePath) {
++            Check-Fail 'The Jellyfin service has an explicit --webdir argument, which takes precedence over JELLYFIN_WEB_DIR.'
++        }
++    }
++}
++else {
++    Check-Ok 'Web overlay is not managed by this installation (plugin-only mode or no state file).'
++}
++
++if (-not $SkipNvidiaPreflight) {
++    Write-Host ''
++    try {
++        $preflight = & (Join-Path $PSScriptRoot 'nvidia-preflight.ps1')
++        if ($preflight) { Check-Ok 'NVIDIA / FFmpeg preflight passed.' }
++        else { Check-Warn 'NVIDIA / FFmpeg preflight reported issues.' }
++    }
++    catch {
++        Check-Warn "NVIDIA / FFmpeg preflight could not complete: $($_.Exception.Message)"
++    }
++}
++
++$logRoot = Join-Path $jellyfin.DataFolder 'log'
++if (Test-Path $logRoot) {
++    $latest = Get-ChildItem -LiteralPath $logRoot -File -ErrorAction SilentlyContinue |
++        Sort-Object LastWriteTime -Descending |
++        Select-Object -First 1
++    if ($null -ne $latest) {
++        Write-Host "`nLatest Jellyfin log: $($latest.FullName)"
++        $matches = Select-String -Path $latest.FullName -Pattern 'JFIC|Image Controls|Harmony runtime patch' -ErrorAction SilentlyContinue |
++            Select-Object -Last 8
++        if ($null -ne $matches) {
++            foreach ($match in $matches) { Write-Host "  $($match.Line)" }
++        }
++        else {
++            Check-Warn 'No recent JFIC/Harmony lines were found in the latest Jellyfin log.'
++        }
++    }
++}
++
++Write-Host ''
++if ($failures.Count -gt 0) {
++    Write-Host "Result: FAILED ($($failures.Count) blocking issue(s), $($warnings.Count) warning(s))"
++    exit 1
++}
++
++Write-Host "Result: OK ($($warnings.Count) warning(s))"
++exit 0
+--- /dev/null
++++ b/deploy/windows/ffmpeg-safe-mode.ps1
+@@ -0,0 +1,52 @@
++[CmdletBinding()]
++param(
++    [Parameter(Position = 0)]
++    [ValidateSet('on', 'off', 'status')]
++    [string]$Action = 'status',
++    [switch]$NoRestart
++)
++
++$ErrorActionPreference = 'Stop'
++. (Join-Path $PSScriptRoot 'Jfic.Windows.Common.ps1')
++
++if ($Action -eq 'status') {
++    if (Test-Path $script:JficSafeModeMarker) {
++        Write-Host "JFIC FFmpeg safe mode: ON ($script:JficSafeModeMarker)"
++    }
++    else {
++        Write-Host 'JFIC FFmpeg safe mode: OFF'
++    }
++    return
++}
++
++Assert-JficAdministrator
++$jellyfin = Get-JficJellyfinInfo
++$service = $jellyfin.Service
++$serviceWasRunning = $false
++
++if ($null -ne $service) {
++    $serviceWasRunning = Stop-JficServiceIfRunning $service
++}
++elseif ($null -ne (Get-Process -Name 'jellyfin' -ErrorAction SilentlyContinue)) {
++    throw 'Jellyfin is running outside the Windows service. Stop it manually before changing safe mode.'
++}
++
++if ($Action -eq 'on') {
++    New-Item -ItemType Directory -Path $script:JficStateRoot -Force | Out-Null
++    New-Item -ItemType File -Path $script:JficSafeModeMarker -Force | Out-Null
++    Write-JficStep "FFmpeg safe mode enabled: $script:JficSafeModeMarker"
++}
++else {
++    Remove-Item -LiteralPath $script:JficSafeModeMarker -Force -ErrorAction SilentlyContinue
++    Write-JficStep 'FFmpeg safe mode disabled.'
++}
++
++if (-not $NoRestart -and $serviceWasRunning -and $null -ne $service) {
++    Start-JficServiceAndVerify $service.Name
++}
++elseif ($serviceWasRunning) {
++    Write-JficWarn "Restart service '$($service.Name)' to apply the safe-mode change."
++}
++elseif ($null -eq $service) {
++    Write-JficWarn 'Restart Jellyfin manually to apply the safe-mode change.'
++}
+--- /dev/null
++++ b/deploy/windows/install.ps1
+@@ -0,0 +1,213 @@
++[CmdletBinding()]
++param(
++    [switch]$NoWeb,
++    [switch]$ForceVersion,
++    [switch]$NoRestart,
++    [switch]$SkipNvidiaPreflight,
++    [switch]$ForceWebOverride
++)
++
++$ErrorActionPreference = 'Stop'
++. (Join-Path $PSScriptRoot 'Jfic.Windows.Common.ps1')
++
++Assert-JficAdministrator
++
++$packageRoot = $PSScriptRoot
++$pluginSource = Join-Path $packageRoot 'plugin'
++$webSource = Join-Path $packageRoot 'web'
++$versionFile = Join-Path $packageRoot 'VERSION'
++
++if (-not (Test-Path (Join-Path $pluginSource 'Jellyfin.Plugin.ImageControls.dll'))) {
++    throw "Plugin payload is missing from $pluginSource"
++}
++if (-not (Test-Path (Join-Path $pluginSource '0Harmony.dll'))) {
++    throw "Harmony payload is missing from $pluginSource"
++}
++if (-not $NoWeb) {
++    if (-not (Test-Path (Join-Path $webSource 'image-controls.js')) -or
++        -not (Test-Path (Join-Path $webSource 'image-controls.css'))) {
++        throw "Web payload is missing from $webSource"
++    }
++}
++
++$packageVersion = if (Test-Path $versionFile) { (Get-Content $versionFile -Raw).Trim() } else { 'unknown' }
++$jellyfin = Get-JficJellyfinInfo
++$pluginDirectory = Get-JficPluginDirectory $jellyfin.DataFolder
++$webOverlay = Get-JficWebOverlayDirectory
++$previousState = Get-JficInstallState
++
++Write-JficStep "Package version: $packageVersion"
++Write-JficStep "Jellyfin executable: $($jellyfin.Executable)"
++Write-JficStep "Jellyfin data: $($jellyfin.DataFolder)"
++Write-JficStep "Detected Jellyfin version: $($jellyfin.Version)"
++
++if (-not $ForceVersion -and $jellyfin.Version -ne $script:JficTargetJellyfin) {
++    throw "JFIC $packageVersion targets Jellyfin $script:JficTargetJellyfin, but $($jellyfin.Version) was detected. Use -ForceVersion only after validating compatibility."
++}
++
++$service = $jellyfin.Service
++if (-not $NoWeb) {
++    if ($null -eq $service) {
++        throw 'Automatic Web overlay installation requires Jellyfin to be installed as a Windows service. Use -NoWeb for plugin-only installation, or install Jellyfin as a service.'
++    }
++    if (-not (Test-Path (Join-Path $jellyfin.NativeWeb 'index.html'))) {
++        throw "Native Jellyfin Web was not found at $($jellyfin.NativeWeb)"
++    }
++    $imagePath = Get-JficServiceImagePath $service.Name
++    if (Test-JficExplicitWebDirArgument $imagePath) {
++        throw "The Jellyfin service already has an explicit --webdir command-line argument. Jellyfin gives --webdir higher priority than JELLYFIN_WEB_DIR, so JFIC will not modify it automatically. Use -NoWeb or remove the custom --webdir first."
++    }
++}
++
++if (-not $SkipNvidiaPreflight) {
++    $preflightOk = & (Join-Path $packageRoot 'nvidia-preflight.ps1') -Strict
++    if (-not $preflightOk) { throw 'NVIDIA / FFmpeg preflight failed.' }
++}
++else {
++    Write-JficWarn 'NVIDIA / FFmpeg preflight skipped by request.'
++}
++
++New-Item -ItemType Directory -Path $script:JficStateRoot -Force | Out-Null
++$backupRoot = Join-Path $script:JficStateRoot ("backups\" + (Get-Date -Format 'yyyyMMdd-HHmmss'))
++New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
++
++$pluginBackup = Join-Path $backupRoot 'plugin'
++$webBackup = Join-Path $backupRoot 'web'
++$stateBackup = Join-Path $backupRoot 'install-state.json'
++$hadPlugin = Test-Path $pluginDirectory
++$hadWeb = Test-Path $webOverlay
++$hadState = Test-Path $script:JficStateFile
++
++if ($hadPlugin) { Copy-Item -LiteralPath $pluginDirectory -Destination $pluginBackup -Recurse -Force }
++if ($hadWeb) { Copy-Item -LiteralPath $webOverlay -Destination $webBackup -Recurse -Force }
++if ($hadState) { Copy-Item -LiteralPath $script:JficStateFile -Destination $stateBackup -Force }
++
++$serviceWasRunning = $false
++$originalServiceEnvironment = @()
++$serviceEnvironmentChanged = $false
++
++try {
++    if ($null -ne $service) {
++        $originalServiceEnvironment = @(Get-JficServiceEnvironment $service.Name)
++        $serviceWasRunning = Stop-JficServiceIfRunning $service
++    }
++    else {
++        $runningProcess = Get-Process -Name 'jellyfin' -ErrorAction SilentlyContinue
++        if ($null -ne $runningProcess) {
++            throw 'Jellyfin is running outside the Windows service. Stop the tray/direct Jellyfin process before installing JFIC.'
++        }
++    }
++
++    Write-JficStep "Installing plugin to $pluginDirectory"
++    Remove-Item -LiteralPath $pluginDirectory -Recurse -Force -ErrorAction SilentlyContinue
++    New-Item -ItemType Directory -Path $pluginDirectory -Force | Out-Null
++    Get-ChildItem -LiteralPath $pluginSource -Force | Copy-Item -Destination $pluginDirectory -Recurse -Force
++
++    $previousWebDirEntries = @()
++    $webInstalled = -not $NoWeb
++
++    if ($webInstalled) {
++        Write-JficStep "Creating JFIC-owned Web overlay at $webOverlay"
++        Remove-Item -LiteralPath $webOverlay -Recurse -Force -ErrorAction SilentlyContinue
++        New-Item -ItemType Directory -Path $webOverlay -Force | Out-Null
++        Get-ChildItem -LiteralPath $jellyfin.NativeWeb -Force | Copy-Item -Destination $webOverlay -Recurse -Force
++        Copy-Item -LiteralPath (Join-Path $webSource 'image-controls.js') -Destination $webOverlay -Force
++        Copy-Item -LiteralPath (Join-Path $webSource 'image-controls.css') -Destination $webOverlay -Force
++
++        $indexPath = Join-Path $webOverlay 'index.html'
++        $html = [IO.File]::ReadAllText($indexPath)
++        if ($html -notmatch 'data-jfic="1"') {
++            if ($html -notmatch '<head>') { throw 'Could not find <head> in Jellyfin Web index.html.' }
++            $marker = "<link rel=`"stylesheet`" href=`"image-controls.css?v=$packageVersion`" data-jfic=`"1`">`r`n<script src=`"image-controls.js?v=$packageVersion`" data-jfic=`"1`"></script>"
++            $html = [regex]::Replace($html, '<head>', "<head>`r`n$marker", 1)
++            $utf8NoBom = New-Object Text.UTF8Encoding($false)
++            [IO.File]::WriteAllText($indexPath, $html, $utf8NoBom)
++        }
++
++        $previousWebDirEntries = @(Set-JficWebServiceEnvironment `
++            -ServiceName $service.Name `
++            -WebDirectory $webOverlay `
++            -ForceWebOverride:$ForceWebOverride `
++            -PreviousState $previousState)
++        $serviceEnvironmentChanged = $true
++    }
++    elseif ($null -ne $previousState -and $null -ne $service -and -not [string]::IsNullOrWhiteSpace($previousState.ManagedWebDir)) {
++        Write-JficStep 'Removing the previously managed JFIC Web override because -NoWeb was selected.'
++        [void](Restore-JficWebServiceEnvironment `
++            -ServiceName $service.Name `
++            -ManagedWebDirectory ([string]$previousState.ManagedWebDir) `
++            -PreviousWebDirEntries @($previousState.PreviousWebDirEntries))
++        $serviceEnvironmentChanged = $true
++        Remove-Item -LiteralPath ([string]$previousState.ManagedWebDir) -Recurse -Force -ErrorAction SilentlyContinue
++    }
++
++    $state = [ordered]@{
++        Schema = 1
++        JficVersion = $packageVersion
++        TargetJellyfin = $script:JficTargetJellyfin
++        InstalledUtc = [DateTime]::UtcNow.ToString('o')
++        JellyfinVersion = $jellyfin.Version
++        InstallFolder = $jellyfin.InstallFolder
++        DataFolder = $jellyfin.DataFolder
++        PluginDirectory = $pluginDirectory
++        ServiceName = if ($null -ne $service) { $service.Name } else { $null }
++        WebInstalled = $webInstalled
++        ManagedWebDir = if ($webInstalled) { $webOverlay } else { $null }
++        PreviousWebDirEntries = @($previousWebDirEntries)
++        SafeModeMarker = $script:JficSafeModeMarker
++    }
++    Save-JficInstallState $state
++
++    if (-not $NoRestart -and $serviceWasRunning) {
++        Start-JficServiceAndVerify $service.Name
++    }
++    elseif ($serviceWasRunning) {
++        Write-JficWarn "Jellyfin was running before installation but -NoRestart was selected. Start service '$($service.Name)' manually."
++    }
++
++    Write-JficStep 'Installation completed successfully.'
++    Write-Host "  Plugin: $pluginDirectory"
++    if ($webInstalled) { Write-Host "  Web overlay: $webOverlay" }
++    Write-Host "  State: $script:JficStateFile"
++    Write-Host '  Next: run .\doctor.ps1'
++}
++catch {
++    $installError = $_
++    Write-JficWarn "Installation failed. Restoring the previous JFIC state: $($installError.Exception.Message)"
++
++    if ($null -ne $service -and $serviceEnvironmentChanged) {
++        try { Set-JficServiceEnvironment -ServiceName $service.Name -Values $originalServiceEnvironment } catch { Write-JficWarn $_.Exception.Message }
++    }
++
++    try {
++        Remove-Item -LiteralPath $pluginDirectory -Recurse -Force -ErrorAction SilentlyContinue
++        if ($hadPlugin -and (Test-Path $pluginBackup)) {
++            Copy-Item -LiteralPath $pluginBackup -Destination $pluginDirectory -Recurse -Force
++        }
++    }
++    catch { Write-JficWarn "Plugin rollback failed: $($_.Exception.Message)" }
++
++    try {
++        Remove-Item -LiteralPath $webOverlay -Recurse -Force -ErrorAction SilentlyContinue
++        if ($hadWeb -and (Test-Path $webBackup)) {
++            Copy-Item -LiteralPath $webBackup -Destination $webOverlay -Recurse -Force
++        }
++    }
++    catch { Write-JficWarn "Web rollback failed: $($_.Exception.Message)" }
++
++    try {
++        if ($hadState -and (Test-Path $stateBackup)) {
++            Copy-Item -LiteralPath $stateBackup -Destination $script:JficStateFile -Force
++        }
++        elseif (-not $hadState) {
++            Remove-Item -LiteralPath $script:JficStateFile -Force -ErrorAction SilentlyContinue
++        }
++    }
++    catch { Write-JficWarn "State rollback failed: $($_.Exception.Message)" }
++
++    if ($serviceWasRunning -and -not $NoRestart -and $null -ne $service) {
++        try { Start-JficServiceAndVerify $service.Name } catch { Write-JficWarn "Jellyfin restart after rollback failed: $($_.Exception.Message)" }
++    }
++
++    throw $installError
++}
+--- /dev/null
++++ b/deploy/windows/nvidia-preflight.ps1
+@@ -0,0 +1,104 @@
++[CmdletBinding()]
++param(
++    [switch]$Strict
++)
++
++$ErrorActionPreference = 'Stop'
++. (Join-Path $PSScriptRoot 'Jfic.Windows.Common.ps1')
++
++$failures = New-Object System.Collections.Generic.List[string]
++$warnings = New-Object System.Collections.Generic.List[string]
++
++function Add-Failure([string]$Message) { $failures.Add($Message) }
++function Add-Warning([string]$Message) { $warnings.Add($Message) }
++
++Write-JficStep 'NVIDIA / FFmpeg preflight'
++
++$nvidia = Get-Command 'nvidia-smi.exe' -ErrorAction SilentlyContinue
++if ($null -eq $nvidia) {
++    $candidates = @(
++        (Join-Path $env:SystemRoot 'System32\nvidia-smi.exe'),
++        (Join-Path $env:ProgramFiles 'NVIDIA Corporation\NVSMI\nvidia-smi.exe')
++    )
++    foreach ($candidate in $candidates) {
++        if (Test-Path $candidate) {
++            $nvidia = [pscustomobject]@{ Source = $candidate }
++            break
++        }
++    }
++}
++
++if ($null -eq $nvidia) {
++    Add-Failure 'nvidia-smi.exe was not found. Install a compatible NVIDIA driver, or use -SkipNvidiaPreflight when installing JFIC for client-side/software-only use.'
++}
++else {
++    try {
++        $gpu = & $nvidia.Source --query-gpu=name,driver_version --format=csv,noheader 2>&1
++        Write-Host "  GPU: $($gpu -join '; ')"
++    }
++    catch {
++        Add-Failure "nvidia-smi failed: $($_.Exception.Message)"
++    }
++}
++
++try {
++    $jellyfin = Get-JficJellyfinInfo
++    $ffmpeg = Get-JficFfmpeg $jellyfin.InstallFolder
++}
++catch {
++    Add-Failure $_.Exception.Message
++    $ffmpeg = $null
++}
++
++if ([string]::IsNullOrWhiteSpace($ffmpeg)) {
++    Add-Failure 'FFmpeg was not found in the Jellyfin installation or PATH.'
++}
++else {
++    Write-Host "  FFmpeg: $ffmpeg"
++    $encoders = (& $ffmpeg -hide_banner -encoders 2>&1 | Out-String)
++    foreach ($encoder in @('h264_nvenc', 'hevc_nvenc')) {
++        if ($encoders -notmatch [regex]::Escape($encoder)) {
++            Add-Failure "Required NVENC encoder is missing: $encoder"
++        }
++        else {
++            Write-Host "  Encoder OK: $encoder"
++        }
++    }
++
++    if ($encoders -match 'av1_nvenc') {
++        Write-Host '  Encoder OK: av1_nvenc'
++    }
++    else {
++        Add-Warning 'av1_nvenc is not present. This is expected on GPUs/FFmpeg builds without AV1 NVENC support.'
++    }
++
++    $filters = (& $ffmpeg -hide_banner -filters 2>&1 | Out-String)
++    foreach ($filter in @('scale_cuda', 'hwupload_cuda', 'eq', 'hue')) {
++        if ($filters -notmatch "(?m)\b$([regex]::Escape($filter))\b") {
++            Add-Failure "Required FFmpeg filter is missing: $filter"
++        }
++        else {
++            Write-Host "  Filter OK: $filter"
++        }
++    }
++
++    if ($filters -match '(?m)\btonemap_cuda\b') {
++        Write-Host '  Filter OK: tonemap_cuda'
++    }
++    else {
++        Add-Warning 'tonemap_cuda is not present. JFIC can still operate without that optional filter.'
++    }
++}
++
++foreach ($warning in $warnings) { Write-JficWarn $warning }
++
++if ($failures.Count -gt 0) {
++    foreach ($failure in $failures) { Write-Error "[JFIC] $failure" -ErrorAction Continue }
++    if ($Strict) {
++        throw "NVIDIA / FFmpeg preflight failed with $($failures.Count) blocking issue(s)."
++    }
++    return $false
++}
++
++Write-JficStep 'NVIDIA / FFmpeg preflight passed.'
++return $true
+--- /dev/null
++++ b/deploy/windows/uninstall.ps1
+@@ -0,0 +1,99 @@
++[CmdletBinding()]
++param(
++    [switch]$PurgeConfig,
++    [switch]$PurgeBackups,
++    [switch]$NoRestart
++)
++
++$ErrorActionPreference = 'Stop'
++. (Join-Path $PSScriptRoot 'Jfic.Windows.Common.ps1')
++
++Assert-JficAdministrator
++
++$jellyfin = Get-JficJellyfinInfo
++$state = Get-JficInstallState
++$pluginDirectory = if ($null -ne $state -and -not [string]::IsNullOrWhiteSpace($state.PluginDirectory)) {
++    [string]$state.PluginDirectory
++}
++else {
++    Get-JficPluginDirectory $jellyfin.DataFolder
++}
++
++$service = $jellyfin.Service
++$serviceWasRunning = Stop-JficServiceIfRunning $service
++
++try {
++    Write-JficStep 'Removing JFIC plugin directories...'
++    $pluginsRoot = Join-Path $jellyfin.DataFolder 'plugins'
++    if (Test-Path $pluginsRoot) {
++        Get-ChildItem -LiteralPath $pluginsRoot -Directory -ErrorAction SilentlyContinue |
++            Where-Object { $_.Name -like 'Image Controls_*' } |
++            Remove-Item -Recurse -Force
++    }
++
++    if ($PurgeConfig) {
++        $configRoot = Join-Path $pluginsRoot 'configurations'
++        if (Test-Path $configRoot) {
++            Get-ChildItem -LiteralPath $configRoot -File -ErrorAction SilentlyContinue |
++                Where-Object {
++                    $_.Name -like '*Image Controls*.xml' -or
++                    $_.Name -like '*ImageControls*.xml'
++                } |
++                Remove-Item -Force
++        }
++        Write-JficStep 'Plugin XML configuration removed.'
++    }
++
++    if ($null -ne $state -and
++        $null -ne $service -and
++        -not [string]::IsNullOrWhiteSpace($state.ManagedWebDir)) {
++        $restored = Restore-JficWebServiceEnvironment `
++            -ServiceName $service.Name `
++            -ManagedWebDirectory ([string]$state.ManagedWebDir) `
++            -PreviousWebDirEntries @($state.PreviousWebDirEntries)
++        if ($restored) {
++            Write-JficStep 'Previous Jellyfin Web service configuration restored.'
++        }
++        else {
++            Write-JficWarn 'The service Web directory had been changed after JFIC installation; it was left untouched.'
++        }
++    }
++
++    $managedWeb = if ($null -ne $state -and -not [string]::IsNullOrWhiteSpace($state.ManagedWebDir)) {
++        [string]$state.ManagedWebDir
++    }
++    else {
++        Get-JficWebOverlayDirectory
++    }
++    Remove-Item -LiteralPath $managedWeb -Recurse -Force -ErrorAction SilentlyContinue
++
++    Remove-Item -LiteralPath $script:JficSafeModeMarker -Force -ErrorAction SilentlyContinue
++    Remove-Item -LiteralPath $script:JficStateFile -Force -ErrorAction SilentlyContinue
++
++    if ($PurgeBackups) {
++        Remove-Item -LiteralPath (Join-Path $script:JficStateRoot 'backups') -Recurse -Force -ErrorAction SilentlyContinue
++    }
++
++    # Remove empty JFIC-owned directories only. Never remove Jellyfin native data.
++    foreach ($dir in @((Join-Path $script:JficStateRoot 'current'), $script:JficStateRoot)) {
++        if (Test-Path $dir) {
++            $child = Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue | Select-Object -First 1
++            if ($null -eq $child) { Remove-Item -LiteralPath $dir -Force -ErrorAction SilentlyContinue }
++        }
++    }
++
++    if (-not $NoRestart -and $serviceWasRunning -and $null -ne $service) {
++        Start-JficServiceAndVerify $service.Name
++    }
++    elseif ($serviceWasRunning) {
++        Write-JficWarn "Jellyfin was running before uninstallation but -NoRestart was selected. Start service '$($service.Name)' manually."
++    }
++
++    Write-JficStep 'JFIC uninstalled. Native Jellyfin files, databases, settings and media were not removed.'
++}
++catch {
++    if ($serviceWasRunning -and -not $NoRestart -and $null -ne $service) {
++        try { Start-JficServiceAndVerify $service.Name } catch { Write-JficWarn "Jellyfin restart failed: $($_.Exception.Message)" }
++    }
++    throw
++}
+--- /dev/null
++++ b/docs/WINDOWS-SERVER.md
+@@ -0,0 +1,223 @@
++# JFIC on Windows Server
++
++This document describes the automated Windows installation shipped with JFIC.
++
++## Supported installation mode
++
++The recommended Windows Server setup is Jellyfin installed as the Windows service. The official Jellyfin Windows installer uses the `JellyfinServer` service name and records the Jellyfin install/data directories in:
++
++```text
++HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Jellyfin\Server
++```
++
++JFIC uses those values instead of assuming fixed paths.
++
++A typical installation uses:
++
++```text
++C:\Program Files\Jellyfin\Server
++C:\ProgramData\Jellyfin\Server
++```
++
++but the scripts support custom locations exposed by Jellyfin's registry values.
++
++## Install
++
++Extract `JellyfinImageControls-Windows-<version>.zip` and run:
++
++```text
++Install-JFIC.cmd
++```
++
++The launcher requests Administrator privileges automatically. Validate the result with:
++
++```text
++Doctor-JFIC.cmd
++```
++
++The equivalent PowerShell commands are:
++
++```powershell
++Set-ExecutionPolicy -Scope Process Bypass
++.\install.ps1
++.\doctor.ps1
++```
++
++## What the installer changes
++
++The plugin is installed below Jellyfin's data directory:
++
++```text
++<DataFolder>\plugins\Image Controls_1.0.0.0
++```
++
++JFIC state is stored separately:
++
++```text
++%ProgramData%\jellyfin-image-controls
++```
++
++The Web overlay is stored at:
++
++```text
++%ProgramData%\jellyfin-image-controls\current\web
++```
++
++The installer copies the native Jellyfin Web application into that JFIC-owned directory, adds `image-controls.js` and `image-controls.css`, and points the Jellyfin service to the copy using `JELLYFIN_WEB_DIR`.
++
++The original Jellyfin Web directory is not edited.
++
++The installer records the previous service-level Web environment value, if any, so it can be restored during uninstallation.
++
++## Transactional behavior
++
++Before replacing an existing JFIC installation, the installer copies the current JFIC plugin/Web state into:
++
++```text
++%ProgramData%\jellyfin-image-controls\backups\<timestamp>
++```
++
++If installation fails after Jellyfin has been stopped, the script attempts to restore:
++
++- the previous JFIC plugin directory;
++- the previous JFIC Web overlay;
++- the previous service environment;
++- the previous JFIC state file;
++- the previous Jellyfin running state.
++
++It does not roll back or modify native Jellyfin files because those files are never replaced by the installer.
++
++## Existing custom Web configuration
++
++Jellyfin resolves its Web directory in this order:
++
++1. `--webdir` command-line option;
++2. `JELLYFIN_WEB_DIR` environment variable;
++3. the `jellyfin-web` directory beside `jellyfin.exe`.
++
++If the Windows service already contains an explicit `--webdir`, JFIC stops with an error instead of editing that command line automatically.
++
++If the service already has a custom `JELLYFIN_WEB_DIR`, JFIC also stops by default. To let JFIC temporarily replace that environment value while preserving it for uninstallation, run:
++
++```powershell
++.\install.ps1 -ForceWebOverride
++```
++
++## NVIDIA preflight
++
++The standard installer runs:
++
++```powershell
++.\nvidia-preflight.ps1 -Strict
++```
++
++It checks:
++
++- `nvidia-smi`;
++- Jellyfin FFmpeg discovery;
++- `h264_nvenc`;
++- `hevc_nvenc`;
++- `scale_cuda`;
++- `hwupload_cuda`;
++- `eq`;
++- `hue`.
++
++`av1_nvenc` and `tonemap_cuda` are reported when available but are not required for every GPU/use case.
++
++For browser-only/software testing:
++
++```powershell
++.\install.ps1 -SkipNvidiaPreflight
++```
++
++## Safe mode
++
++The runtime patch now resolves the safe-mode marker per operating system.
++
++Windows:
++
++```text
++%ProgramData%\jellyfin-image-controls\disable-ffmpeg-patch
++```
++
++Linux:
++
++```text
++/var/lib/jellyfin-image-controls/disable-ffmpeg-patch
++```
++
++An explicit `JFIC_SAFE_MODE_MARKER` environment variable can override the marker path for development/testing.
++
++Use:
++
++```powershell
++.\ffmpeg-safe-mode.ps1 on
++.\ffmpeg-safe-mode.ps1 status
++.\ffmpeg-safe-mode.ps1 off
++```
++
++## Plugin-only installation
++
++If Jellyfin is not running as a Windows service, automatic Web-overlay management is not performed.
++
++Stop Jellyfin, then run:
++
++```powershell
++.\install.ps1 -NoWeb -NoRestart
++```
++
++Restart Jellyfin manually afterwards.
++
++## Uninstall
++
++The easiest removal is:
++
++```text
++Uninstall-JFIC.cmd
++```
++
++The PowerShell equivalent is:
++
++```powershell
++.\uninstall.ps1
++```
++
++Optional switches:
++
++```powershell
++.\uninstall.ps1 -PurgeConfig
++.\uninstall.ps1 -PurgeBackups
++.\uninstall.ps1 -NoRestart
++```
++
++The uninstaller removes JFIC-owned files and restores the Web service environment saved during installation. It does not remove native Jellyfin files, databases or media.
++
++## Troubleshooting
++
++Run:
++
++```powershell
++.\doctor.ps1
++```
++
++The latest Jellyfin logs are normally found below:
++
++```text
++<DataFolder>\log
++```
++
++Useful JFIC messages include:
++
++```text
++JFIC Harmony runtime patch active
++JFIC safe mode is enabled
++JFIC Harmony runtime patch could not be installed
++```
++
++If the Web UI does not show the palette button, check that:
++
++- `doctor.ps1` reports the Web overlay as injected;
++- the service contains the expected `JELLYFIN_WEB_DIR`;
++- no service `--webdir` argument overrides it;
++- Jellyfin was restarted after installation;
++- the browser cache has been refreshed.
+--- /dev/null
++++ b/eng/Package-Windows.ps1
+@@ -0,0 +1,91 @@
++[CmdletBinding()]
++param(
++    [switch]$SkipBuild
++)
++
++$ErrorActionPreference = 'Stop'
++$Root = Split-Path -Parent $PSScriptRoot
++$Version = (Get-Content (Join-Path $Root 'VERSION') -Raw).Trim()
++
++if (-not $SkipBuild) {
++    & (Join-Path $PSScriptRoot 'Build.ps1') -Configuration Release
++}
++
++$BuildOut = Join-Path $Root 'src\Jellyfin.Plugin.ImageControls\bin\Release\net9.0'
++$PluginDll = Join-Path $BuildOut 'Jellyfin.Plugin.ImageControls.dll'
++$HarmonyDll = Join-Path $BuildOut '0Harmony.dll'
++if (-not (Test-Path $PluginDll)) { throw "Plugin build output is missing: $PluginDll" }
++
++# Always package the exact net9 Harmony asset referenced by the project. This
++# prevents a stale bin/0Harmony.dll from an older package restore being shipped.
++$ProjectXml = [xml](Get-Content (Join-Path $Root 'src\Jellyfin.Plugin.ImageControls\Jellyfin.Plugin.ImageControls.csproj') -Raw)
++$HarmonyPackageVersion = @(
++    $ProjectXml.Project.ItemGroup.PackageReference |
++        Where-Object Include -eq 'Lib.Harmony' |
++        Select-Object -First 1 -ExpandProperty Version
++)
++if ([string]::IsNullOrWhiteSpace($HarmonyPackageVersion)) {
++    throw 'Lib.Harmony version was not found in Jellyfin.Plugin.ImageControls.csproj.'
++}
++
++$NuGetRoot = if ($env:NUGET_PACKAGES) { $env:NUGET_PACKAGES } else { Join-Path $env:USERPROFILE '.nuget\packages' }
++$HarmonyPackageDll = Join-Path $NuGetRoot "lib.harmony\$HarmonyPackageVersion\lib\net9.0\0Harmony.dll"
++if (-not (Test-Path $HarmonyPackageDll)) { throw "Harmony NuGet asset is missing: $HarmonyPackageDll" }
++Copy-Item -LiteralPath $HarmonyPackageDll -Destination $HarmonyDll -Force
++
++$PluginAssembly = [Reflection.Assembly]::LoadFrom((Resolve-Path $PluginDll))
++$HarmonyReference = $PluginAssembly.GetReferencedAssemblies() |
++    Where-Object Name -eq '0Harmony' |
++    Select-Object -First 1
++$HarmonyFile = [Reflection.AssemblyName]::GetAssemblyName((Resolve-Path $HarmonyDll))
++if ($null -eq $HarmonyReference) { throw 'Jellyfin.Plugin.ImageControls.dll does not reference 0Harmony.' }
++if ($HarmonyReference.Version -ne $HarmonyFile.Version) {
++    throw "Harmony mismatch: plugin reference=$($HarmonyReference.Version), packaged file=$($HarmonyFile.Version). Run a clean restore/build."
++}
++Write-Host "Harmony coherent: $($HarmonyFile.Version)"
++
++$Dist = Join-Path $Root 'dist'
++$BundleName = "JellyfinImageControls-Windows-$Version"
++$Stage = Join-Path $Dist $BundleName
++$Zip = Join-Path $Dist "$BundleName.zip"
++
++Remove-Item $Stage -Recurse -Force -ErrorAction SilentlyContinue
++Remove-Item $Zip -Force -ErrorAction SilentlyContinue
++New-Item -ItemType Directory -Force -Path (Join-Path $Stage 'plugin'), (Join-Path $Stage 'web') | Out-Null
++
++Copy-Item $PluginDll (Join-Path $Stage 'plugin')
++Copy-Item $HarmonyDll (Join-Path $Stage 'plugin')
++$Pdb = [IO.Path]::ChangeExtension($PluginDll, '.pdb')
++if (Test-Path $Pdb) { Copy-Item $Pdb (Join-Path $Stage 'plugin') }
++
++Copy-Item (Join-Path $Root 'web\image-controls.js') (Join-Path $Stage 'web')
++Copy-Item (Join-Path $Root 'web\image-controls.css') (Join-Path $Stage 'web')
++Copy-Item (Join-Path $Root 'deploy\windows\*.ps1') $Stage
++Copy-Item (Join-Path $Root 'deploy\windows\*.cmd') $Stage
++Copy-Item (Join-Path $Root 'VERSION') $Stage
++Copy-Item (Join-Path $Root 'README.md') $Stage
++Copy-Item (Join-Path $Root 'docs\WINDOWS-SERVER.md') (Join-Path $Stage 'INSTALLATION.md')
++
++Add-Type -AssemblyName System.IO.Compression
++Add-Type -AssemblyName System.IO.Compression.FileSystem
++$Archive = [IO.Compression.ZipFile]::Open($Zip, [IO.Compression.ZipArchiveMode]::Create)
++try {
++    Get-ChildItem -Path $Stage -Recurse -File | ForEach-Object {
++        $RelativePath = $_.FullName.Substring($Stage.Length).TrimStart('\', '/')
++        $EntryName = $RelativePath -replace '\\', '/'
++        [IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
++            $Archive,
++            $_.FullName,
++            $EntryName,
++            [IO.Compression.CompressionLevel]::Optimal
++        ) | Out-Null
++    }
++}
++finally {
++    $Archive.Dispose()
++}
++
++$Hash = (Get-FileHash $Zip -Algorithm SHA256).Hash.ToLowerInvariant()
++Set-Content -Path "$Zip.sha256" -Value "$Hash $([IO.Path]::GetFileName($Zip))" -Encoding ascii
++Write-Host "Windows bundle created: $Zip"
++Write-Host "SHA256: $Hash"
+--- a/src/Jellyfin.Plugin.ImageControls/Runtime/RuntimePatchHostedService.cs
++++ b/src/Jellyfin.Plugin.ImageControls/Runtime/RuntimePatchHostedService.cs
+@@ -37,11 +37,15 @@
+                 _logger.LogInformation("JFIC runtime patch disabled by configuration.");
+                 return Task.CompletedTask;
+             }
+-            if (File.Exists("/var/lib/jellyfin-image-controls/disable-ffmpeg-patch"))
++
++            var safeModeMarkerPath = ResolveSafeModeMarkerPath();
++            if (File.Exists(safeModeMarkerPath))
+             {
+                 _state.PatchActive = false;
+                 _state.LastError = null;
+-                _logger.LogWarning("JFIC safe mode is enabled; Harmony hooks were not installed.");
++                _logger.LogWarning(
++                    "JFIC safe mode is enabled; Harmony hooks were not installed. Marker: {SafeModeMarkerPath}",
++                    safeModeMarkerPath);
+                 return Task.CompletedTask;
+             }
+             var patchAssembly = LoadDefaultContextPatchAssembly();
+@@ -95,6 +99,27 @@
+             enableNvencFfmpegBackend,
+             allowNvencCopyBack,
+             statusCallback);
++
++    private static string ResolveSafeModeMarkerPath()
++    {
++        var overridePath = Environment.GetEnvironmentVariable("JFIC_SAFE_MODE_MARKER");
++        if (!string.IsNullOrWhiteSpace(overridePath))
++        {
++            return overridePath;
++        }
++
++        if (OperatingSystem.IsWindows())
++        {
++            var commonApplicationData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
++            if (!string.IsNullOrWhiteSpace(commonApplicationData))
++            {
++                return Path.Combine(commonApplicationData, "jellyfin-image-controls", "disable-ffmpeg-patch");
++            }
++        }
++
++        return "/var/lib/jellyfin-image-controls/disable-ffmpeg-patch";
++    }
++
+     private static Assembly LoadDefaultContextPatchAssembly()
+     {
+         var currentAssembly = typeof(RuntimePatchHostedService).Assembly;
