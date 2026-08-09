@@ -11,7 +11,7 @@ $warnings = New-Object System.Collections.Generic.List[string]
 
 function Check-Ok([string]$Message) { Write-Host "[ OK ] $Message" }
 function Check-Warn([string]$Message) { $warnings.Add($Message); Write-Warning "[WARN] $Message" }
-function Check-Fail([string]$Message) { $failures.Add($Message); Write-Error "[FAIL] $Message" -ErrorAction Continue }
+function Check-Fail([string]$Message) { $failures.Add($Message); Write-Host "[FAIL] $Message" -ForegroundColor Red }
 
 Write-Host 'JFIC Windows doctor'
 Write-Host '==================='
@@ -35,27 +35,54 @@ catch {
 if ($null -ne $jellyfin.Service) {
     $jellyfin.Service.Refresh()
     if ($jellyfin.Service.Status -eq [System.ServiceProcess.ServiceControllerStatus]::Running) {
-        Check-Ok "Windows service '$($jellyfin.Service.Name)' is running."
+        Check-Ok "Run mode: Windows service '$($jellyfin.Service.Name)' (running)."
     }
     else {
-        Check-Warn "Windows service '$($jellyfin.Service.Name)' is $($jellyfin.Service.Status)."
+        Check-Warn "Run mode: Windows service '$($jellyfin.Service.Name)' ($($jellyfin.Service.Status))."
     }
 }
 else {
-    Check-Warn 'Jellyfin Windows service was not found. Automatic Web overlay management requires service mode.'
+    $trayProcesses = @(Get-JficTrayProcesses $jellyfin.TrayExecutable)
+    $serverProcesses = @(Get-JficJellyfinServerProcesses $jellyfin.Executable)
+    if (-not [string]::IsNullOrWhiteSpace($jellyfin.TrayExecutable)) {
+        if ($trayProcesses.Count -gt 0) {
+            Check-Ok "Run mode: Jellyfin Basic/Tray ($($jellyfin.TrayExecutable), running)."
+        }
+        else {
+            Check-Ok "Run mode: Jellyfin Basic/Tray ($($jellyfin.TrayExecutable))."
+        }
+    }
+    else {
+        Check-Warn 'Run mode: direct jellyfin.exe (no Windows service or Jellyfin tray executable detected).'
+    }
+
+    if ($serverProcesses.Count -gt 0) {
+        Check-Ok "Jellyfin process is running (PID $((@($serverProcesses | Select-Object -ExpandProperty ProcessId)) -join ', '))."
+    }
+    else {
+        Check-Warn 'Jellyfin process is not currently running.'
+    }
 }
 
-$pluginDirectory = Get-JficPluginDirectory $jellyfin.DataFolder
+$state = Get-JficInstallState
+$pluginDirectory = if ($null -ne $state -and -not [string]::IsNullOrWhiteSpace([string]$state.PluginDirectory)) {
+    [string]$state.PluginDirectory
+}
+else {
+    Get-JficPluginDirectory $jellyfin.DataFolder
+}
 $pluginDll = Join-Path $pluginDirectory 'Jellyfin.Plugin.ImageControls.dll'
 $harmonyDll = Join-Path $pluginDirectory '0Harmony.dll'
 if (Test-Path $pluginDll) { Check-Ok "Plugin DLL: $pluginDll" } else { Check-Fail "Plugin DLL missing: $pluginDll" }
 if (Test-Path $harmonyDll) { Check-Ok "Harmony DLL: $harmonyDll" } else { Check-Fail "Harmony DLL missing: $harmonyDll" }
 
-$state = Get-JficInstallState
 if ($null -ne $state) {
     Check-Ok "Install state: $script:JficStateFile"
     Write-Host "       JFIC version: $($state.JficVersion)"
     Write-Host "       Installed UTC: $($state.InstalledUtc)"
+    if (-not [string]::IsNullOrWhiteSpace([string]$state.RunMode)) {
+        Write-Host "       Installed run mode: $($state.RunMode)"
+    }
 }
 else {
     Check-Warn "Install state not found: $script:JficStateFile"
@@ -80,20 +107,48 @@ if ($null -ne $state -and $state.WebInstalled -eq $true) {
         Check-Fail "Web overlay index missing: $index"
     }
 
-    if ($null -ne $jellyfin.Service) {
-        $expected = "JELLYFIN_WEB_DIR=$web"
-        $environment = @(Get-JficServiceEnvironment $jellyfin.Service.Name)
-        if ($environment -contains $expected) {
-            Check-Ok 'Jellyfin service points to the JFIC Web overlay.'
+    $mode = [string]$state.WebEnvironmentMode
+    if ([string]::IsNullOrWhiteSpace($mode)) {
+        # Compatibility with state files created by the first Windows automation.
+        $mode = if (-not [string]::IsNullOrWhiteSpace([string]$state.ServiceName)) { 'Service' } else { 'Machine' }
+    }
+
+    if ($mode -eq 'Service') {
+        if ($null -eq $jellyfin.Service) {
+            Check-Fail 'The saved JFIC Web configuration expects a Windows service, but no Jellyfin service is currently installed.'
         }
         else {
-            Check-Fail "Jellyfin service does not contain expected environment entry: $expected"
+            $expected = "JELLYFIN_WEB_DIR=$web"
+            $environment = @(Get-JficServiceEnvironment $jellyfin.Service.Name)
+            if ($environment -contains $expected) {
+                Check-Ok 'Jellyfin service points to the JFIC Web overlay.'
+            }
+            else {
+                Check-Fail "Jellyfin service does not contain expected environment entry: $expected"
+            }
+
+            $imagePath = Get-JficServiceImagePath $jellyfin.Service.Name
+            if (Test-JficExplicitWebDirArgument $imagePath) {
+                Check-Fail 'The Jellyfin service has an explicit --webdir argument, which takes precedence over JELLYFIN_WEB_DIR.'
+            }
+        }
+    }
+    elseif ($mode -eq 'Machine') {
+        $machine = Get-JficMachineWebEnvironment
+        if ($machine.Exists -and $machine.Value -eq $web) {
+            Check-Ok 'Windows machine environment points Basic/Tray Jellyfin to the JFIC Web overlay.'
+        }
+        else {
+            $actual = if ($machine.Exists) { $machine.Value } else { '<not set>' }
+            Check-Fail "Machine-level JELLYFIN_WEB_DIR is '$actual'; expected '$web'."
         }
 
-        $imagePath = Get-JficServiceImagePath $jellyfin.Service.Name
-        if (Test-JficExplicitWebDirArgument $imagePath) {
-            Check-Fail 'The Jellyfin service has an explicit --webdir argument, which takes precedence over JELLYFIN_WEB_DIR.'
+        if (Test-JficRunningProcessHasExplicitWebDir $jellyfin.Executable) {
+            Check-Fail 'The running Jellyfin process has an explicit --webdir argument, which takes precedence over JELLYFIN_WEB_DIR.'
         }
+    }
+    else {
+        Check-Warn "Unknown Web environment mode in install state: '$mode'."
     }
 }
 else {
@@ -119,9 +174,9 @@ if (Test-Path $logRoot) {
         Select-Object -First 1
     if ($null -ne $latest) {
         Write-Host "`nLatest Jellyfin log: $($latest.FullName)"
-        $matches = Select-String -Path $latest.FullName -Pattern 'JFIC|Image Controls|Harmony runtime patch' -ErrorAction SilentlyContinue |
-            Select-Object -Last 8
-        if ($null -ne $matches) {
+        $matches = @(Select-String -Path $latest.FullName -Pattern 'JFIC|Image Controls|Harmony runtime patch' -ErrorAction SilentlyContinue |
+            Select-Object -Last 8)
+        if ($matches.Count -gt 0) {
             foreach ($match in $matches) { Write-Host "  $($match.Line)" }
         }
         else {

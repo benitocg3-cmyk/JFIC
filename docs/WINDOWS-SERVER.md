@@ -2,15 +2,15 @@
 
 This document describes the automated Windows installation shipped with JFIC.
 
-## Supported installation mode
+## Supported installation modes
 
-The recommended Windows Server setup is Jellyfin installed as the Windows service. The official Jellyfin Windows installer uses the `JellyfinServer` service name and records the Jellyfin install/data directories in:
+JFIC supports both the Jellyfin **Windows service** installation and the normal **Basic/Tray** installation. Service mode is still a good choice for headless Windows Server systems, but it is no longer required by the JFIC installer. The official Jellyfin Windows installer uses the `JellyfinServer` service name and records the Jellyfin install/data directories in:
 
 ```text
 HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Jellyfin\Server
 ```
 
-JFIC uses those values instead of assuming fixed paths.
+JFIC uses those values instead of assuming fixed paths. When the `JellyfinServer` service is absent, JFIC detects the official tray executable and treats the installation as Basic/Tray mode.
 
 A typical installation uses:
 
@@ -63,11 +63,14 @@ The Web overlay is stored at:
 %ProgramData%\jellyfin-image-controls\current\web
 ```
 
-The installer copies the native Jellyfin Web application into that JFIC-owned directory, adds `image-controls.js` and `image-controls.css`, and points the Jellyfin service to the copy using `JELLYFIN_WEB_DIR`.
+The installer copies the native Jellyfin Web application into that JFIC-owned directory and adds `image-controls.js` and `image-controls.css`.
 
-The original Jellyfin Web directory is not edited.
+How Jellyfin is pointed at that copy depends on the detected run mode:
 
-The installer records the previous service-level Web environment value, if any, so it can be restored during uninstallation.
+- **Service mode:** JFIC adds `JELLYFIN_WEB_DIR` to the Jellyfin service environment.
+- **Basic/Tray mode:** JFIC sets machine-level `JELLYFIN_WEB_DIR`, which is inherited by newly started Jellyfin/tray processes.
+
+The original Jellyfin Web directory is not edited. The installer records the previous value at the relevant scope so it can be restored during uninstallation.
 
 ## Transactional behavior
 
@@ -81,7 +84,7 @@ If installation fails after Jellyfin has been stopped, the script attempts to re
 
 - the previous JFIC plugin directory;
 - the previous JFIC Web overlay;
-- the previous service environment;
+- the previous service or machine Web environment;
 - the previous JFIC state file;
 - the previous Jellyfin running state.
 
@@ -95,9 +98,9 @@ Jellyfin resolves its Web directory in this order:
 2. `JELLYFIN_WEB_DIR` environment variable;
 3. the `jellyfin-web` directory beside `jellyfin.exe`.
 
-If the Windows service already contains an explicit `--webdir`, JFIC stops with an error instead of editing that command line automatically.
+If the Windows service or a running direct Jellyfin process contains an explicit `--webdir`, JFIC stops with an error instead of silently overriding it.
 
-If the service already has a custom `JELLYFIN_WEB_DIR`, JFIC also stops by default. To let JFIC temporarily replace that environment value while preserving it for uninstallation, run:
+If the relevant service/machine scope already has a custom `JELLYFIN_WEB_DIR`, JFIC also stops by default. To let JFIC temporarily replace that environment value while preserving it for uninstallation, run:
 
 ```powershell
 .\install.ps1 -ForceWebOverride
@@ -156,17 +159,23 @@ Use:
 .\ffmpeg-safe-mode.ps1 off
 ```
 
+## Basic/Tray mode
+
+The standard Jellyfin Basic Install is fully automated. No Windows service is required.
+
+The installer detects `Jellyfin.Windows.Tray.exe` (and older `JellyfinTray.exe` naming), stops the tray/server when necessary, installs JFIC, configures the machine-level Web environment, and restarts Jellyfin through the tray when it was previously running.
+
+If Jellyfin was already stopped, JFIC leaves it stopped.
+
 ## Plugin-only installation
 
-If Jellyfin is not running as a Windows service, automatic Web-overlay management is not performed.
-
-Stop Jellyfin, then run:
+To install only the backend plugin and skip all Web UI integration:
 
 ```powershell
-.\install.ps1 -NoWeb -NoRestart
+.\install.ps1 -NoWeb
 ```
 
-Restart Jellyfin manually afterwards.
+This works in both service and Basic/Tray modes.
 
 ## Uninstall
 
@@ -190,7 +199,7 @@ Optional switches:
 .\uninstall.ps1 -NoRestart
 ```
 
-The uninstaller removes JFIC-owned files and restores the Web service environment saved during installation. It does not remove native Jellyfin files, databases or media.
+The uninstaller removes JFIC-owned files and restores the service-level or machine-level Web environment saved during installation. It does not remove native Jellyfin files, databases or media.
 
 ## Troubleshooting
 
@@ -217,7 +226,7 @@ JFIC Harmony runtime patch could not be installed
 If the Web UI does not show the palette button, check that:
 
 - `doctor.ps1` reports the Web overlay as injected;
-- the service contains the expected `JELLYFIN_WEB_DIR`;
-- no service `--webdir` argument overrides it;
+- the expected service-level or machine-level `JELLYFIN_WEB_DIR` is present;
+- no `--webdir` argument overrides it;
 - Jellyfin was restarted after installation;
 - the browser cache has been refreshed.

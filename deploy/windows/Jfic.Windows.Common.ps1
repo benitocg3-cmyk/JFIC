@@ -3,6 +3,7 @@ $script:JficPluginAbi = '1.0.0.0'
 $script:JficStateRoot = Join-Path $env:ProgramData 'jellyfin-image-controls'
 $script:JficStateFile = Join-Path $script:JficStateRoot 'install-state.json'
 $script:JficSafeModeMarker = Join-Path $script:JficStateRoot 'disable-ffmpeg-patch'
+$script:JficWebEnvironmentName = 'JELLYFIN_WEB_DIR'
 
 function Write-JficStep {
     param([Parameter(Mandatory = $true)][string]$Message)
@@ -118,6 +119,103 @@ function Set-JficServiceEnvironment {
         -Force | Out-Null
 }
 
+function Get-JficMachineWebEnvironment {
+    $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment'
+    try {
+        $item = Get-ItemProperty -Path $path -Name $script:JficWebEnvironmentName -ErrorAction Stop
+        $property = $item.PSObject.Properties[$script:JficWebEnvironmentName]
+        return [pscustomobject]@{
+            Exists = $true
+            Value = [string]$property.Value
+        }
+    }
+    catch {
+        return [pscustomobject]@{
+            Exists = $false
+            Value = $null
+        }
+    }
+}
+
+function Set-JficMachineWebEnvironmentRaw {
+    param(
+        [Parameter(Mandatory = $true)][bool]$Exists,
+        [AllowNull()][string]$Value
+    )
+
+    if ($Exists) {
+        [Environment]::SetEnvironmentVariable(
+            $script:JficWebEnvironmentName,
+            $Value,
+            [EnvironmentVariableTarget]::Machine)
+        $env:JELLYFIN_WEB_DIR = $Value
+    }
+    else {
+        [Environment]::SetEnvironmentVariable(
+            $script:JficWebEnvironmentName,
+            $null,
+            [EnvironmentVariableTarget]::Machine)
+        Remove-Item Env:JELLYFIN_WEB_DIR -ErrorAction SilentlyContinue
+    }
+}
+
+function Set-JficWebMachineEnvironment {
+    param(
+        [Parameter(Mandatory = $true)][string]$WebDirectory,
+        [switch]$ForceWebOverride,
+        [AllowNull()]$PreviousState
+    )
+
+    $current = Get-JficMachineWebEnvironment
+    $previousExists = $false
+    $previousValue = $null
+
+    $isManagedUpgrade = $false
+    if ($null -ne $PreviousState) {
+        $mode = [string]$PreviousState.WebEnvironmentMode
+        if ($mode -eq 'Machine' -and
+            [string]$PreviousState.ManagedWebDir -eq $WebDirectory -and
+            $current.Exists -and
+            $current.Value -eq $WebDirectory) {
+            $isManagedUpgrade = $true
+            $previousExists = [bool]$PreviousState.PreviousMachineWebDirExists
+            $previousValue = [string]$PreviousState.PreviousMachineWebDirValue
+        }
+    }
+
+    if (-not $isManagedUpgrade -and $current.Exists -and $current.Value -ne $WebDirectory) {
+        if (-not $ForceWebOverride) {
+            throw "A machine-level $script:JficWebEnvironmentName already exists: $($current.Value). Use -ForceWebOverride to replace it temporarily, or -NoWeb to install the plugin only."
+        }
+        $previousExists = $true
+        $previousValue = $current.Value
+    }
+
+    Set-JficMachineWebEnvironmentRaw -Exists $true -Value $WebDirectory
+
+    return [pscustomobject]@{
+        PreviousExists = $previousExists
+        PreviousValue = $previousValue
+    }
+}
+
+function Restore-JficWebMachineEnvironment {
+    param(
+        [Parameter(Mandatory = $true)][string]$ManagedWebDirectory,
+        [bool]$PreviousExists = $false,
+        [AllowNull()][string]$PreviousValue
+    )
+
+    $current = Get-JficMachineWebEnvironment
+    if (-not $current.Exists -or $current.Value -ne $ManagedWebDirectory) {
+        # The administrator changed this after JFIC was installed. Do not overwrite it.
+        return $false
+    }
+
+    Set-JficMachineWebEnvironmentRaw -Exists $PreviousExists -Value $PreviousValue
+    return $true
+}
+
 function Get-JficJellyfinVersion {
     param([Parameter(Mandatory = $true)][string]$Executable)
 
@@ -137,6 +235,76 @@ function Get-JficJellyfinVersion {
     $match = [regex]::Match($text, '(?<!\d)(\d+\.\d+\.\d+)(?:\.\d+)?')
     if ($match.Success) { return $match.Groups[1].Value }
     return $null
+}
+
+function Get-JficTrayExecutable {
+    param([Parameter(Mandatory = $true)][string]$InstallFolder)
+
+    $candidates = @(
+        (Join-Path $InstallFolder 'Jellyfin.Windows.Tray.exe'),
+        (Join-Path $InstallFolder 'JellyfinTray.exe')
+    )
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) { return $candidate }
+    }
+
+    try {
+        $runKey = Get-ItemProperty -Path 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -Name 'JellyfinTray' -ErrorAction Stop
+        $runValue = [string]$runKey.JellyfinTray
+        $runMatch = [regex]::Match($runValue, '^\s*(?:"([^"]+\.exe)"|(.+?\.exe))(?:\s|$)', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        if ($runMatch.Success) {
+            $runExecutable = if (-not [string]::IsNullOrWhiteSpace($runMatch.Groups[1].Value)) { $runMatch.Groups[1].Value } else { $runMatch.Groups[2].Value }
+            if (Test-Path $runExecutable) { return $runExecutable }
+        }
+    }
+    catch {
+        # Autostart is optional.
+    }
+
+    $match = Get-ChildItem -LiteralPath $InstallFolder -File -Filter '*Tray*.exe' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '(?i)jellyfin.*tray|tray.*jellyfin' } |
+        Select-Object -First 1
+    if ($null -ne $match) { return $match.FullName }
+    return $null
+}
+
+function Get-JficJellyfinServerProcesses {
+    param([Parameter(Mandatory = $true)][string]$Executable)
+
+    $target = [IO.Path]::GetFullPath($Executable)
+    $processes = @(Get-CimInstance Win32_Process -Filter "Name='jellyfin.exe'" -ErrorAction SilentlyContinue)
+    return @($processes | Where-Object {
+        if ([string]::IsNullOrWhiteSpace($_.ExecutablePath)) {
+            $true
+        }
+        else {
+            try { [IO.Path]::GetFullPath($_.ExecutablePath) -ieq $target } catch { $false }
+        }
+    })
+}
+
+function Get-JficTrayProcesses {
+    param([AllowNull()][string]$TrayExecutable)
+
+    $candidates = @()
+    $candidates += @(Get-Process -Name 'Jellyfin.Windows.Tray' -ErrorAction SilentlyContinue)
+    $candidates += @(Get-Process -Name 'JellyfinTray' -ErrorAction SilentlyContinue)
+
+    if ([string]::IsNullOrWhiteSpace($TrayExecutable)) { return @($candidates) }
+
+    $target = [IO.Path]::GetFullPath($TrayExecutable)
+    return @($candidates | Where-Object {
+        try {
+            if ([string]::IsNullOrWhiteSpace($_.Path)) {
+                $true
+            }
+            else {
+                [IO.Path]::GetFullPath($_.Path) -ieq $target
+            }
+        }
+        catch { $true }
+    })
 }
 
 function Get-JficJellyfinInfo {
@@ -162,6 +330,8 @@ function Get-JficJellyfinInfo {
 
     $service = Get-JficService
     $version = Get-JficJellyfinVersion $executable
+    $trayExecutable = Get-JficTrayExecutable $installFolder
+    $runMode = if ($null -ne $service) { 'Service' } elseif (-not [string]::IsNullOrWhiteSpace($trayExecutable)) { 'Tray' } else { 'Executable' }
 
     return [pscustomobject]@{
         InstallFolder = $installFolder
@@ -171,6 +341,8 @@ function Get-JficJellyfinInfo {
         Version = $version
         Service = $service
         Registry = $registry
+        TrayExecutable = $trayExecutable
+        RunMode = $runMode
     }
 }
 
@@ -244,6 +416,92 @@ function Start-JficServiceAndVerify {
     }
 }
 
+function Stop-JficExecutableRuntime {
+    param([Parameter(Mandatory = $true)]$Jellyfin)
+
+    $trayProcesses = @(Get-JficTrayProcesses $Jellyfin.TrayExecutable)
+    $serverProcesses = @(Get-JficJellyfinServerProcesses $Jellyfin.Executable)
+
+    $state = [pscustomobject]@{
+        TrayWasRunning = $trayProcesses.Count -gt 0
+        ServerWasRunning = $serverProcesses.Count -gt 0
+        TrayExecutable = $Jellyfin.TrayExecutable
+    }
+
+    if ($trayProcesses.Count -gt 0) {
+        Write-JficStep 'Stopping Jellyfin tray application...'
+        foreach ($process in $trayProcesses) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+        }
+        Start-Sleep -Milliseconds 500
+    }
+
+    $serverProcesses = @(Get-JficJellyfinServerProcesses $Jellyfin.Executable)
+    if ($serverProcesses.Count -gt 0) {
+        Write-JficStep 'Stopping Jellyfin process...'
+        foreach ($process in $serverProcesses) {
+            Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
+        }
+
+        $deadline = (Get-Date).AddSeconds(15)
+        do {
+            Start-Sleep -Milliseconds 250
+            $remaining = @(Get-JficJellyfinServerProcesses $Jellyfin.Executable)
+        } while ($remaining.Count -gt 0 -and (Get-Date) -lt $deadline)
+
+        if ($remaining.Count -gt 0) {
+            throw 'Jellyfin did not stop within 15 seconds.'
+        }
+    }
+
+    return $state
+}
+
+function Start-JficExecutableRuntime {
+    param(
+        [Parameter(Mandatory = $true)]$Jellyfin,
+        [Parameter(Mandatory = $true)]$RuntimeState
+    )
+
+    if (-not $RuntimeState.ServerWasRunning) {
+        if ($RuntimeState.TrayWasRunning) {
+            Write-JficWarn 'The Jellyfin tray was open while the server was stopped. JFIC left both stopped to preserve the server state; reopen the tray when desired.'
+        }
+        return
+    }
+
+    # A PowerShell window opened before an environment change can carry a stale
+    # process environment. Synchronize the value from the machine registry before
+    # starting Jellyfin or its tray child process.
+    $machineWeb = Get-JficMachineWebEnvironment
+    if ($machineWeb.Exists) {
+        $env:JELLYFIN_WEB_DIR = $machineWeb.Value
+    }
+    else {
+        Remove-Item Env:JELLYFIN_WEB_DIR -ErrorAction SilentlyContinue
+    }
+
+    if ($RuntimeState.TrayWasRunning -and -not [string]::IsNullOrWhiteSpace($RuntimeState.TrayExecutable) -and (Test-Path $RuntimeState.TrayExecutable)) {
+        Write-JficStep 'Restarting Jellyfin through the tray application...'
+        Start-Process -FilePath $RuntimeState.TrayExecutable | Out-Null
+    }
+    else {
+        Write-JficStep 'Restarting Jellyfin executable...'
+        $arguments = "--datadir `"$($Jellyfin.DataFolder)`""
+        Start-Process -FilePath $Jellyfin.Executable -ArgumentList $arguments -WindowStyle Hidden | Out-Null
+    }
+
+    $deadline = (Get-Date).AddSeconds(20)
+    do {
+        Start-Sleep -Milliseconds 500
+        $running = @(Get-JficJellyfinServerProcesses $Jellyfin.Executable)
+    } while ($running.Count -eq 0 -and (Get-Date) -lt $deadline)
+
+    if ($running.Count -eq 0) {
+        throw 'Jellyfin did not start within 20 seconds.'
+    }
+}
+
 function Set-JficWebServiceEnvironment {
     param(
         [Parameter(Mandatory = $true)][string]$ServiceName,
@@ -258,6 +516,7 @@ function Set-JficWebServiceEnvironment {
 
     $previousWeb = @()
     if ($null -ne $PreviousState -and
+        [string]$PreviousState.WebEnvironmentMode -eq 'Service' -and
         $PreviousState.ManagedWebDir -eq $WebDirectory -and
         $currentWeb -contains $managed) {
         $previousWeb = @($PreviousState.PreviousWebDirEntries)
@@ -308,4 +567,12 @@ function Test-JficExplicitWebDirArgument {
     param([AllowNull()][string]$ImagePath)
     if ([string]::IsNullOrWhiteSpace($ImagePath)) { return $false }
     return $ImagePath -match '(?i)(?:^|\s)--webdir(?:=|\s+)'
+}
+
+function Test-JficRunningProcessHasExplicitWebDir {
+    param([Parameter(Mandatory = $true)][string]$Executable)
+    foreach ($process in @(Get-JficJellyfinServerProcesses $Executable)) {
+        if (Test-JficExplicitWebDirArgument ([string]$process.CommandLine)) { return $true }
+    }
+    return $false
 }

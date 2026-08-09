@@ -48,12 +48,12 @@ Windows Server no longer requires manually copying DLLs or editing Jellyfin Web 
 ## Requirements
 
 - Jellyfin Server `10.11.11`
-- Jellyfin installed as the Windows service for the fully automatic Web overlay setup
+- Jellyfin installed either in **Windows service mode** or the normal **Basic/Tray mode**
 - PowerShell 5.1 or newer
 - Administrator rights
 - for the NVIDIA server-side path: a working NVIDIA driver and Jellyfin FFmpeg with NVENC/CUDA support
 
-The official Jellyfin Windows installer normally exposes its `InstallFolder` and `DataFolder` through the Windows Registry. JFIC discovers those values automatically.
+The official Jellyfin Windows installer normally exposes its `InstallFolder` and `DataFolder` through the Windows Registry. JFIC discovers those values automatically and also detects whether Jellyfin is running as a service or through the Windows tray application.
 
 ## Install
 
@@ -90,13 +90,14 @@ The installer automatically:
 1. detects the Jellyfin installation and data directories;
 2. verifies the Jellyfin version;
 3. runs the NVIDIA / FFmpeg preflight;
-4. stops Jellyfin only if it was already running;
-5. installs `Jellyfin.Plugin.ImageControls.dll` and the exact packaged `0Harmony.dll`;
-6. creates a JFIC-owned copy of Jellyfin Web;
-7. injects `image-controls.js` and `image-controls.css` into that copy;
-8. configures the Jellyfin service to use the JFIC Web copy through `JELLYFIN_WEB_DIR`;
-9. saves installation state for clean uninstallation and upgrades;
-10. restarts Jellyfin only if it had been running before the installation.
+4. detects **Service**, **Basic/Tray**, or direct executable mode;
+5. stops Jellyfin only when needed for a running installation;
+6. installs `Jellyfin.Plugin.ImageControls.dll` and the exact packaged `0Harmony.dll`;
+7. creates a JFIC-owned copy of Jellyfin Web;
+8. injects `image-controls.js` and `image-controls.css` into that copy;
+9. configures `JELLYFIN_WEB_DIR` at service scope for service installs, or machine scope for Basic/Tray installs;
+10. saves the previous Web environment and installation state for clean uninstallation/upgrades;
+11. restarts Jellyfin using the same run mode when it had been running before installation.
 
 JFIC does **not** modify the native `jellyfin-web` directory.
 
@@ -116,7 +117,7 @@ JFIC does **not** modify the native `jellyfin-web` directory.
 
 `-ForceVersion` bypasses the exact Jellyfin `10.11.11` check. Use it only after validating the runtime hooks against that Jellyfin build.
 
-`-ForceWebOverride` allows JFIC to temporarily replace an existing service-level `JELLYFIN_WEB_DIR`; the previous value is saved and restored by the uninstaller. JFIC will still refuse to modify a service that has an explicit `--webdir` command-line argument because that argument has higher precedence.
+`-ForceWebOverride` allows JFIC to temporarily replace an existing `JELLYFIN_WEB_DIR` at the scope used by the detected Jellyfin mode. The previous value is saved and restored by the uninstaller. JFIC still refuses to override an explicit `--webdir` command-line argument because that argument has higher precedence.
 
 ## Diagnostics
 
@@ -126,7 +127,7 @@ Run:
 .\doctor.ps1
 ```
 
-The doctor checks the Jellyfin version, Windows service, plugin DLL, Harmony DLL, installation state, Web overlay, safe mode, service Web configuration, NVIDIA/FFmpeg capabilities, and recent JFIC/Harmony log entries.
+The doctor checks the Jellyfin version, detected Windows run mode, plugin DLL, Harmony DLL, installation state, Web overlay, safe mode, service/machine Web configuration, NVIDIA/FFmpeg capabilities, and recent JFIC/Harmony log entries.
 
 To skip the GPU checks:
 
@@ -144,7 +145,7 @@ Safe mode prevents the Harmony FFmpeg hooks from being installed when Jellyfin s
 .\ffmpeg-safe-mode.ps1 off
 ```
 
-If Jellyfin is running as a service, the script restarts it automatically so the change takes effect.
+If Jellyfin is running, the script restarts it automatically using the detected Service or Basic/Tray mode so the change takes effect.
 
 ## Uninstall
 
@@ -160,7 +161,7 @@ Or from an elevated PowerShell:
 .\uninstall.ps1
 ```
 
-The uninstaller removes JFIC, removes its Web overlay, restores the previous Jellyfin service Web configuration, and leaves the native Jellyfin installation, database, settings, and media untouched.
+The uninstaller removes JFIC, removes its Web overlay, restores the previous service-level or machine-level Jellyfin Web configuration, and leaves the native Jellyfin installation, database, settings, and media untouched.
 
 Optional cleanup:
 
@@ -169,17 +170,21 @@ Optional cleanup:
 .\uninstall.ps1 -PurgeBackups
 ```
 
-## Windows tray/direct-process installs
+## Windows Basic/Tray installs
 
-The automatic Web overlay is intentionally limited to Windows **service mode**, where JFIC can change and restore the server environment safely.
+The normal Jellyfin **Basic Install** is supported automatically. A Windows service is not required.
 
-For a tray/direct Jellyfin process, stop Jellyfin and use plugin-only mode:
+When no `JellyfinServer` service exists, JFIC:
 
-```powershell
-.\install.ps1 -NoWeb -NoRestart
-```
+- detects the official Jellyfin tray executable;
+- creates the same isolated Web overlay used in service mode;
+- stores `JELLYFIN_WEB_DIR` in the Windows machine environment so newly started Jellyfin processes use that overlay;
+- preserves any previous machine-level value and restores it during uninstall;
+- restarts the tray/server automatically if Jellyfin was running before installation.
 
-Then restart Jellyfin yourself.
+The installer never edits the native `jellyfin-web` directory.
+
+Direct `jellyfin.exe` launches are also supported when no tray executable is available.
 
 For the complete Windows procedure and troubleshooting notes, see [`docs/WINDOWS-SERVER.md`](docs/WINDOWS-SERVER.md).
 

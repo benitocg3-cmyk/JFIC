@@ -12,7 +12,7 @@ Assert-JficAdministrator
 
 $jellyfin = Get-JficJellyfinInfo
 $state = Get-JficInstallState
-$pluginDirectory = if ($null -ne $state -and -not [string]::IsNullOrWhiteSpace($state.PluginDirectory)) {
+$pluginDirectory = if ($null -ne $state -and -not [string]::IsNullOrWhiteSpace([string]$state.PluginDirectory)) {
     [string]$state.PluginDirectory
 }
 else {
@@ -20,7 +20,15 @@ else {
 }
 
 $service = $jellyfin.Service
-$serviceWasRunning = Stop-JficServiceIfRunning $service
+$serviceWasRunning = $false
+$runtimeState = $null
+
+if ($null -ne $service) {
+    $serviceWasRunning = Stop-JficServiceIfRunning $service
+}
+else {
+    $runtimeState = Stop-JficExecutableRuntime $jellyfin
+}
 
 try {
     Write-JficStep 'Removing JFIC plugin directories...'
@@ -44,22 +52,42 @@ try {
         Write-JficStep 'Plugin XML configuration removed.'
     }
 
-    if ($null -ne $state -and
-        $null -ne $service -and
-        -not [string]::IsNullOrWhiteSpace($state.ManagedWebDir)) {
-        $restored = Restore-JficWebServiceEnvironment `
-            -ServiceName $service.Name `
-            -ManagedWebDirectory ([string]$state.ManagedWebDir) `
-            -PreviousWebDirEntries @($state.PreviousWebDirEntries)
-        if ($restored) {
-            Write-JficStep 'Previous Jellyfin Web service configuration restored.'
+    if ($null -ne $state -and -not [string]::IsNullOrWhiteSpace([string]$state.ManagedWebDir)) {
+        $mode = [string]$state.WebEnvironmentMode
+        if ([string]::IsNullOrWhiteSpace($mode)) {
+            $mode = if (-not [string]::IsNullOrWhiteSpace([string]$state.ServiceName)) { 'Service' } else { 'Machine' }
         }
-        else {
-            Write-JficWarn 'The service Web directory had been changed after JFIC installation; it was left untouched.'
+
+        if ($mode -eq 'Service' -and $null -ne $service) {
+            $restored = Restore-JficWebServiceEnvironment `
+                -ServiceName $service.Name `
+                -ManagedWebDirectory ([string]$state.ManagedWebDir) `
+                -PreviousWebDirEntries @($state.PreviousWebDirEntries)
+            if ($restored) {
+                Write-JficStep 'Previous Jellyfin Web service configuration restored.'
+            }
+            else {
+                Write-JficWarn 'The service Web directory had been changed after JFIC installation; it was left untouched.'
+            }
+        }
+        elseif ($mode -eq 'Machine') {
+            $restored = Restore-JficWebMachineEnvironment `
+                -ManagedWebDirectory ([string]$state.ManagedWebDir) `
+                -PreviousExists ([bool]$state.PreviousMachineWebDirExists) `
+                -PreviousValue ([string]$state.PreviousMachineWebDirValue)
+            if ($restored) {
+                Write-JficStep 'Previous machine-level Jellyfin Web environment restored.'
+            }
+            else {
+                Write-JficWarn 'The machine-level JELLYFIN_WEB_DIR was changed after JFIC installation; it was left untouched.'
+            }
+        }
+        elseif ($mode -eq 'Service') {
+            Write-JficWarn 'The saved Web override belongs to a Jellyfin service that is no longer present; service environment restoration was skipped.'
         }
     }
 
-    $managedWeb = if ($null -ne $state -and -not [string]::IsNullOrWhiteSpace($state.ManagedWebDir)) {
+    $managedWeb = if ($null -ne $state -and -not [string]::IsNullOrWhiteSpace([string]$state.ManagedWebDir)) {
         [string]$state.ManagedWebDir
     }
     else {
@@ -74,7 +102,6 @@ try {
         Remove-Item -LiteralPath (Join-Path $script:JficStateRoot 'backups') -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    # Remove empty JFIC-owned directories only. Never remove Jellyfin native data.
     foreach ($dir in @((Join-Path $script:JficStateRoot 'current'), $script:JficStateRoot)) {
         if (Test-Path $dir) {
             $child = Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -82,18 +109,33 @@ try {
         }
     }
 
-    if (-not $NoRestart -and $serviceWasRunning -and $null -ne $service) {
-        Start-JficServiceAndVerify $service.Name
+    if (-not $NoRestart) {
+        if ($serviceWasRunning -and $null -ne $service) {
+            Start-JficServiceAndVerify $service.Name
+        }
+        elseif ($null -eq $service -and $null -ne $runtimeState) {
+            Start-JficExecutableRuntime -Jellyfin $jellyfin -RuntimeState $runtimeState
+        }
     }
-    elseif ($serviceWasRunning) {
-        Write-JficWarn "Jellyfin was running before uninstallation but -NoRestart was selected. Start service '$($service.Name)' manually."
+    else {
+        if ($serviceWasRunning -and $null -ne $service) {
+            Write-JficWarn "Jellyfin was running before uninstallation but -NoRestart was selected. Start service '$($service.Name)' manually."
+        }
+        elseif ($null -eq $service -and $null -ne $runtimeState -and ($runtimeState.ServerWasRunning -or $runtimeState.TrayWasRunning)) {
+            Write-JficWarn 'Jellyfin was running before uninstallation but -NoRestart was selected. Restart Jellyfin/the tray application manually.'
+        }
     }
 
     Write-JficStep 'JFIC uninstalled. Native Jellyfin files, databases, settings and media were not removed.'
 }
 catch {
-    if ($serviceWasRunning -and -not $NoRestart -and $null -ne $service) {
-        try { Start-JficServiceAndVerify $service.Name } catch { Write-JficWarn "Jellyfin restart failed: $($_.Exception.Message)" }
+    if (-not $NoRestart) {
+        if ($serviceWasRunning -and $null -ne $service) {
+            try { Start-JficServiceAndVerify $service.Name } catch { Write-JficWarn "Jellyfin restart failed: $($_.Exception.Message)" }
+        }
+        elseif ($null -eq $service -and $null -ne $runtimeState) {
+            try { Start-JficExecutableRuntime -Jellyfin $jellyfin -RuntimeState $runtimeState } catch { Write-JficWarn "Jellyfin restart failed: $($_.Exception.Message)" }
+        }
     }
     throw
 }

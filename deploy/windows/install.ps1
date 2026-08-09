@@ -35,27 +35,31 @@ $jellyfin = Get-JficJellyfinInfo
 $pluginDirectory = Get-JficPluginDirectory $jellyfin.DataFolder
 $webOverlay = Get-JficWebOverlayDirectory
 $previousState = Get-JficInstallState
+$service = $jellyfin.Service
 
 Write-JficStep "Package version: $packageVersion"
 Write-JficStep "Jellyfin executable: $($jellyfin.Executable)"
 Write-JficStep "Jellyfin data: $($jellyfin.DataFolder)"
 Write-JficStep "Detected Jellyfin version: $($jellyfin.Version)"
+Write-JficStep "Detected Windows run mode: $($jellyfin.RunMode)"
 
 if (-not $ForceVersion -and $jellyfin.Version -ne $script:JficTargetJellyfin) {
     throw "JFIC $packageVersion targets Jellyfin $script:JficTargetJellyfin, but $($jellyfin.Version) was detected. Use -ForceVersion only after validating compatibility."
 }
 
-$service = $jellyfin.Service
 if (-not $NoWeb) {
-    if ($null -eq $service) {
-        throw 'Automatic Web overlay installation requires Jellyfin to be installed as a Windows service. Use -NoWeb for plugin-only installation, or install Jellyfin as a service.'
-    }
     if (-not (Test-Path (Join-Path $jellyfin.NativeWeb 'index.html'))) {
         throw "Native Jellyfin Web was not found at $($jellyfin.NativeWeb)"
     }
-    $imagePath = Get-JficServiceImagePath $service.Name
-    if (Test-JficExplicitWebDirArgument $imagePath) {
-        throw "The Jellyfin service already has an explicit --webdir command-line argument. Jellyfin gives --webdir higher priority than JELLYFIN_WEB_DIR, so JFIC will not modify it automatically. Use -NoWeb or remove the custom --webdir first."
+
+    if ($null -ne $service) {
+        $imagePath = Get-JficServiceImagePath $service.Name
+        if (Test-JficExplicitWebDirArgument $imagePath) {
+            throw "The Jellyfin service already has an explicit --webdir command-line argument. Jellyfin gives --webdir higher priority than JELLYFIN_WEB_DIR, so JFIC will not modify it automatically. Use -NoWeb or remove the custom --webdir first."
+        }
+    }
+    elseif (Test-JficRunningProcessHasExplicitWebDir $jellyfin.Executable) {
+        throw 'The running Jellyfin process has an explicit --webdir argument. It takes precedence over JELLYFIN_WEB_DIR. Stop using the custom --webdir, or install with -NoWeb.'
     }
 }
 
@@ -83,8 +87,11 @@ if ($hadWeb) { Copy-Item -LiteralPath $webOverlay -Destination $webBackup -Recur
 if ($hadState) { Copy-Item -LiteralPath $script:JficStateFile -Destination $stateBackup -Force }
 
 $serviceWasRunning = $false
+$runtimeState = $null
 $originalServiceEnvironment = @()
 $serviceEnvironmentChanged = $false
+$originalMachineEnvironment = Get-JficMachineWebEnvironment
+$machineEnvironmentChanged = $false
 
 try {
     if ($null -ne $service) {
@@ -92,10 +99,7 @@ try {
         $serviceWasRunning = Stop-JficServiceIfRunning $service
     }
     else {
-        $runningProcess = Get-Process -Name 'jellyfin' -ErrorAction SilentlyContinue
-        if ($null -ne $runningProcess) {
-            throw 'Jellyfin is running outside the Windows service. Stop the tray/direct Jellyfin process before installing JFIC.'
-        }
+        $runtimeState = Stop-JficExecutableRuntime $jellyfin
     }
 
     Write-JficStep "Installing plugin to $pluginDirectory"
@@ -104,6 +108,9 @@ try {
     Get-ChildItem -LiteralPath $pluginSource -Force | Copy-Item -Destination $pluginDirectory -Recurse -Force
 
     $previousWebDirEntries = @()
+    $previousMachineWebDirExists = $false
+    $previousMachineWebDirValue = $null
+    $webEnvironmentMode = $null
     $webInstalled = -not $NoWeb
 
     if ($webInstalled) {
@@ -124,25 +131,50 @@ try {
             [IO.File]::WriteAllText($indexPath, $html, $utf8NoBom)
         }
 
-        $previousWebDirEntries = @(Set-JficWebServiceEnvironment `
-            -ServiceName $service.Name `
-            -WebDirectory $webOverlay `
-            -ForceWebOverride:$ForceWebOverride `
-            -PreviousState $previousState)
-        $serviceEnvironmentChanged = $true
+        if ($null -ne $service) {
+            $previousWebDirEntries = @(Set-JficWebServiceEnvironment `
+                -ServiceName $service.Name `
+                -WebDirectory $webOverlay `
+                -ForceWebOverride:$ForceWebOverride `
+                -PreviousState $previousState)
+            $serviceEnvironmentChanged = $true
+            $webEnvironmentMode = 'Service'
+            Write-JficStep "Configured service '$($service.Name)' to use the JFIC Web overlay."
+        }
+        else {
+            $previousMachine = Set-JficWebMachineEnvironment `
+                -WebDirectory $webOverlay `
+                -ForceWebOverride:$ForceWebOverride `
+                -PreviousState $previousState
+            $previousMachineWebDirExists = [bool]$previousMachine.PreviousExists
+            $previousMachineWebDirValue = [string]$previousMachine.PreviousValue
+            $machineEnvironmentChanged = $true
+            $webEnvironmentMode = 'Machine'
+            Write-JficStep 'Configured the Windows machine environment for Jellyfin Basic/Tray mode.'
+        }
     }
-    elseif ($null -ne $previousState -and $null -ne $service -and -not [string]::IsNullOrWhiteSpace($previousState.ManagedWebDir)) {
+    elseif ($null -ne $previousState -and -not [string]::IsNullOrWhiteSpace($previousState.ManagedWebDir)) {
         Write-JficStep 'Removing the previously managed JFIC Web override because -NoWeb was selected.'
-        [void](Restore-JficWebServiceEnvironment `
-            -ServiceName $service.Name `
-            -ManagedWebDirectory ([string]$previousState.ManagedWebDir) `
-            -PreviousWebDirEntries @($previousState.PreviousWebDirEntries))
-        $serviceEnvironmentChanged = $true
+        $previousMode = [string]$previousState.WebEnvironmentMode
+        if ($previousMode -eq 'Service' -and $null -ne $service) {
+            [void](Restore-JficWebServiceEnvironment `
+                -ServiceName $service.Name `
+                -ManagedWebDirectory ([string]$previousState.ManagedWebDir) `
+                -PreviousWebDirEntries @($previousState.PreviousWebDirEntries))
+            $serviceEnvironmentChanged = $true
+        }
+        elseif ($previousMode -eq 'Machine') {
+            [void](Restore-JficWebMachineEnvironment `
+                -ManagedWebDirectory ([string]$previousState.ManagedWebDir) `
+                -PreviousExists ([bool]$previousState.PreviousMachineWebDirExists) `
+                -PreviousValue ([string]$previousState.PreviousMachineWebDirValue))
+            $machineEnvironmentChanged = $true
+        }
         Remove-Item -LiteralPath ([string]$previousState.ManagedWebDir) -Recurse -Force -ErrorAction SilentlyContinue
     }
 
     $state = [ordered]@{
-        Schema = 1
+        Schema = 2
         JficVersion = $packageVersion
         TargetJellyfin = $script:JficTargetJellyfin
         InstalledUtc = [DateTime]::UtcNow.ToString('o')
@@ -150,24 +182,41 @@ try {
         InstallFolder = $jellyfin.InstallFolder
         DataFolder = $jellyfin.DataFolder
         PluginDirectory = $pluginDirectory
+        RunMode = $jellyfin.RunMode
         ServiceName = if ($null -ne $service) { $service.Name } else { $null }
         WebInstalled = $webInstalled
         ManagedWebDir = if ($webInstalled) { $webOverlay } else { $null }
+        WebEnvironmentMode = if ($webInstalled) { $webEnvironmentMode } else { $null }
         PreviousWebDirEntries = @($previousWebDirEntries)
+        PreviousMachineWebDirExists = $previousMachineWebDirExists
+        PreviousMachineWebDirValue = $previousMachineWebDirValue
         SafeModeMarker = $script:JficSafeModeMarker
     }
     Save-JficInstallState $state
 
-    if (-not $NoRestart -and $serviceWasRunning) {
-        Start-JficServiceAndVerify $service.Name
+    if (-not $NoRestart) {
+        if ($serviceWasRunning -and $null -ne $service) {
+            Start-JficServiceAndVerify $service.Name
+        }
+        elseif ($null -eq $service -and $null -ne $runtimeState) {
+            Start-JficExecutableRuntime -Jellyfin $jellyfin -RuntimeState $runtimeState
+        }
     }
-    elseif ($serviceWasRunning) {
-        Write-JficWarn "Jellyfin was running before installation but -NoRestart was selected. Start service '$($service.Name)' manually."
+    else {
+        if ($serviceWasRunning -and $null -ne $service) {
+            Write-JficWarn "Jellyfin was running before installation but -NoRestart was selected. Start service '$($service.Name)' manually."
+        }
+        elseif ($null -eq $service -and $null -ne $runtimeState -and ($runtimeState.ServerWasRunning -or $runtimeState.TrayWasRunning)) {
+            Write-JficWarn 'Jellyfin was running before installation but -NoRestart was selected. Restart Jellyfin/the tray application manually.'
+        }
     }
 
     Write-JficStep 'Installation completed successfully.'
     Write-Host "  Plugin: $pluginDirectory"
-    if ($webInstalled) { Write-Host "  Web overlay: $webOverlay" }
+    if ($webInstalled) {
+        Write-Host "  Web overlay: $webOverlay"
+        Write-Host "  Web environment mode: $webEnvironmentMode"
+    }
     Write-Host "  State: $script:JficStateFile"
     Write-Host '  Next: run .\doctor.ps1'
 }
@@ -177,6 +226,9 @@ catch {
 
     if ($null -ne $service -and $serviceEnvironmentChanged) {
         try { Set-JficServiceEnvironment -ServiceName $service.Name -Values $originalServiceEnvironment } catch { Write-JficWarn $_.Exception.Message }
+    }
+    if ($machineEnvironmentChanged) {
+        try { Set-JficMachineWebEnvironmentRaw -Exists ([bool]$originalMachineEnvironment.Exists) -Value ([string]$originalMachineEnvironment.Value) } catch { Write-JficWarn $_.Exception.Message }
     }
 
     try {
@@ -205,8 +257,13 @@ catch {
     }
     catch { Write-JficWarn "State rollback failed: $($_.Exception.Message)" }
 
-    if ($serviceWasRunning -and -not $NoRestart -and $null -ne $service) {
-        try { Start-JficServiceAndVerify $service.Name } catch { Write-JficWarn "Jellyfin restart after rollback failed: $($_.Exception.Message)" }
+    if (-not $NoRestart) {
+        if ($serviceWasRunning -and $null -ne $service) {
+            try { Start-JficServiceAndVerify $service.Name } catch { Write-JficWarn "Jellyfin restart after rollback failed: $($_.Exception.Message)" }
+        }
+        elseif ($null -eq $service -and $null -ne $runtimeState) {
+            try { Start-JficExecutableRuntime -Jellyfin $jellyfin -RuntimeState $runtimeState } catch { Write-JficWarn "Jellyfin restart after rollback failed: $($_.Exception.Message)" }
+        }
     }
 
     throw $installError

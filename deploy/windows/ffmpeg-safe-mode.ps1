@@ -23,12 +23,13 @@ Assert-JficAdministrator
 $jellyfin = Get-JficJellyfinInfo
 $service = $jellyfin.Service
 $serviceWasRunning = $false
+$runtimeState = $null
 
 if ($null -ne $service) {
     $serviceWasRunning = Stop-JficServiceIfRunning $service
 }
-elseif ($null -ne (Get-Process -Name 'jellyfin' -ErrorAction SilentlyContinue)) {
-    throw 'Jellyfin is running outside the Windows service. Stop it manually before changing safe mode.'
+else {
+    $runtimeState = Stop-JficExecutableRuntime $jellyfin
 }
 
 if ($Action -eq 'on') {
@@ -41,12 +42,19 @@ else {
     Write-JficStep 'FFmpeg safe mode disabled.'
 }
 
-if (-not $NoRestart -and $serviceWasRunning -and $null -ne $service) {
-    Start-JficServiceAndVerify $service.Name
+if (-not $NoRestart) {
+    if ($serviceWasRunning -and $null -ne $service) {
+        Start-JficServiceAndVerify $service.Name
+    }
+    elseif ($null -eq $service -and $null -ne $runtimeState) {
+        Start-JficExecutableRuntime -Jellyfin $jellyfin -RuntimeState $runtimeState
+    }
 }
-elseif ($serviceWasRunning) {
-    Write-JficWarn "Restart service '$($service.Name)' to apply the safe-mode change."
-}
-elseif ($null -eq $service) {
-    Write-JficWarn 'Restart Jellyfin manually to apply the safe-mode change.'
+else {
+    if ($serviceWasRunning -and $null -ne $service) {
+        Write-JficWarn "Restart service '$($service.Name)' to apply the safe-mode change."
+    }
+    elseif ($null -eq $service -and $null -ne $runtimeState -and ($runtimeState.ServerWasRunning -or $runtimeState.TrayWasRunning)) {
+        Write-JficWarn 'Restart Jellyfin/the tray application to apply the safe-mode change.'
+    }
 }
