@@ -1,77 +1,88 @@
 # Jellyfin Image Controls — 1.0.0-beta2
 <img width="1044" height="1180" alt="JFIC" src="https://github.com/user-attachments/assets/b2cfa7b1-89d5-49b2-bccc-cd9028c335bb" />
 
-JFIC cible Jellyfin Server 10.11.11 et NVIDIA NVENC/NVDEC.
+JFIC targets Jellyfin Server 10.11.11 and NVIDIA NVENC/NVDEC.
 
-Il y a deux cas distincts :
+There are two distinct playback scenarios:
 
-- Direct Play / Direct Stream : les réglages sont appliqués dans Firefox par CSS/SVG, après décodage. Aucun transcodage n'est demandé.
-- Transcodage vidéo déjà choisi par Jellyfin : Harmony ajoute les filtres à la chaîne FFmpeg existante. JFIC ne transforme jamais une vidéo `copy` en transcodage.
+- **Direct Play / Direct Stream:** image adjustments are applied in Firefox using CSS/SVG after decoding. No transcoding is requested.
+- **Video transcoding already selected by Jellyfin:** Harmony adds the filters to the existing FFmpeg pipeline. JFIC never turns a `copy` video stream into a transcoded stream.
 
-## Installation simple par Bureau à distance
+## Simple Installation via Remote Desktop
 
-Copiez le ZIP sur Ubuntu dans `~/jfic-install`, puis ouvrez un terminal :
+Copy the ZIP file to `~/jfic-install` on Ubuntu, then open a terminal:
 
 ```bash
 cd ~/jfic-install
-python3 unzip -o JellyfinImageControls-Ubuntu-1.0.0-beta2.zip .
+unzip -o JellyfinImageControls-Ubuntu-1.0.0-beta2.zip .
 sudo bash install.sh
 sudo bash doctor.sh
 ```
 
-L'installation standard installe le plugin et un overlay Web appartenant à
-JFIC. Elle ne modifie pas `/usr/share/jellyfin/web`, les binaires Jellyfin,
-les médias ou `/etc/jellyfin`. Le petit drop-in
-`/etc/systemd/system/jellyfin.service.d/90-jfic-web.conf` est créé par JFIC
-pour servir sa copie Web ; `uninstall.sh` le supprime.
+The standard installation installs both the plugin and a JFIC-owned Web overlay.
 
-Si vous voulez uniquement le plugin serveur :
+It does **not** modify `/usr/share/jellyfin/web`, Jellyfin binaries, media files, or `/etc/jellyfin`.
+
+JFIC creates the small systemd drop-in:
+
+```text
+/etc/systemd/system/jellyfin.service.d/90-jfic-web.conf
+```
+
+This drop-in is used to serve JFIC's Web copy. `uninstall.sh` removes it during uninstallation.
+
+If you only want the server plugin:
 
 ```bash
 sudo bash install.sh --no-web
 ```
 
-Dans ce mode, le backend Harmony fonctionne pour les transcodages existants,
-mais aucun bouton ne peut apparaître automatiquement dans Jellyfin Web.
+In this mode, the Harmony backend still works for existing transcodes, but no button can be added automatically to Jellyfin Web.
 
-## Utilisation
+## Usage
 
-Dans Firefox/Chrome/Android App, lancez une vidéo puis cliquez sur le bouton `palette`. Les
-réglages sont locaux au navigateur et sont mémorisés. En Direct Stream, c'est
-ce traitement local qui est utilisé. Pendant un transcodage vidéo existant,
-le panneau indique si FFmpeg/NVENC a pris la main ; la température reste
-locale.
+In Firefox, Chrome, or the Android app, start playing a video and click the `palette` button.
 
-## Désinstallation complète de JFIC
+Settings are stored locally in the browser and are remembered between sessions.
 
-Depuis le même dossier :
+During Direct Stream playback, image processing is performed locally.
+
+When an existing video transcode is active, the panel indicates whether FFmpeg/NVENC has taken over the processing. Temperature adjustment always remains local.
+
+## Complete JFIC Uninstallation
+
+From the same directory:
 
 ```bash
 sudo bash uninstall.sh
 ```
 
-Cette commande retire le plugin, `0Harmony.dll`, l'overlay Web JFIC, son
-drop-in et son état. Elle conserve Jellyfin officiel, son Web natif, ses
-paramètres, sa base et les médias.
+This removes the plugin, `0Harmony.dll`, the JFIC Web overlay, its systemd drop-in, and JFIC state files.
 
-Pour supprimer aussi la configuration XML du plugin :
+It leaves the official Jellyfin installation, the native Jellyfin Web interface, Jellyfin settings, the database, and all media files untouched.
+
+To also remove the plugin's XML configuration:
 
 ```bash
 sudo bash uninstall.sh --purge-config
 ```
 
-## Diagnostic
+## Diagnostics
 
 ```bash
 sudo bash doctor.sh
 sudo bash verify-base.sh
 ```
 
-Le journal attendu contient `JFIC Harmony runtime patch active`. Si Harmony
-échoue, le plugin ne casse pas Jellyfin : le diagnostic indique l'erreur et
-la lecture continue sans filtre serveur.
+The expected log output contains:
 
-## Mode sûr temporaire
+```text
+JFIC Harmony runtime patch active
+```
+
+If Harmony fails, the plugin does not break Jellyfin. The diagnostic tools report the error, and playback continues without server-side image filters.
+
+## Temporary Safe Mode
 
 ```bash
 sudo bash ffmpeg-safe-mode.sh on
@@ -79,14 +90,17 @@ sudo bash ffmpeg-safe-mode.sh status
 sudo bash ffmpeg-safe-mode.sh off
 ```
 
-Ce mode désactive uniquement les hooks FFmpeg JFIC au redémarrage ; Harmony
-reste fourni pour le fonctionnement normal.
+Safe mode only disables the JFIC FFmpeg hooks after Jellyfin is restarted. Harmony remains installed and available for normal operation.
 
-## Développement Windows
+## Windows Development
 
 ```powershell
 .\eng\Build.ps1
 .\eng\Package-Ubuntu.ps1
 ```
 
-Le ZIP est généré dans `dist\JellyfinImageControls-Ubuntu-1.0.0-beta2.zip`.
+The ZIP package is generated at:
+
+```text
+dist\JellyfinImageControls-Ubuntu-1.0.0-beta2.zip
+```
